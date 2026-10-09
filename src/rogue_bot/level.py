@@ -79,7 +79,11 @@ class LevelMap:
         self.wall_searches: Counter[Pos] = Counter()  # searches that covered each wall square
 
     def t(self, p: Pos) -> str:
-        return self.terrain[p[0]][p[1]]
+        r, c = p
+        # Off the map (including column -1, which Python would wrap) counts as unknown.
+        if not (0 <= r < ROWS and 0 <= c < COLS):
+            return " "
+        return self.terrain[r][c]
 
     def update(self, lines: list[str], player: Pos, hallucinating: bool = False) -> list[Pos]:
         """Merge the visible screen into memory; return visible monster positions.

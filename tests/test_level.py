@@ -146,3 +146,14 @@ def test_search_sweeps_every_wall_of_a_doorless_room():
     assert all(m.wall_searches[w] >= 15 for w in doors_possible)
     # It moved along the bottom wall instead of circling the corners.
     assert {(5, 59), (5, 62), (5, 65)} <= set(picked)
+
+
+def test_walls_on_the_map_edge_do_not_crash():
+    lines = screen({5: " " * 70 + "|.........", 6: " " * 70 + "|.........", 7: " " * 70 + "----------"})
+    m = LevelMap()
+    m.update(lines, (6, 75))
+    assert m.t((6, 80)) == " " and m.t((6, -1)) == " "
+    for r in range(5, 8):
+        for c in range(70, 80):
+            m.search_score((r, c))
+            m.hides_door((r, c))
