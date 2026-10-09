@@ -27,24 +27,41 @@ EPISODES = RL_DIR / "episodes.jsonl"
 
 
 class ScreenNet(BaseFeaturesExtractor):
-    """Learned character embeddings -> small CNN over the map, joined with the status numbers."""
+    """Learned character embeddings over two views, joined with the status numbers.
+
+    The full map (with a layer for squares already visited) is read at full resolution
+    before being condensed, so a lit room, its doors and its monsters are seen in detail;
+    a close-up centred on the agent has its own layers for what's right next to it.
+    """
 
     def __init__(self, space, features_dim: int = 256):
         super().__init__(space, features_dim)
         rows, cols = space["screen"].shape
+        lrows, lcols = space["local"].shape
         self.embed = nn.Embedding(128, 16)
-        self.conv = nn.Sequential(
-            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(), nn.Flatten())
-        conv_out = 64 * (rows // 4) * (cols // 4)
+        self.full = nn.Sequential(
+            nn.Conv2d(17, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 32, 3, padding=1, stride=2), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1, stride=2), nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1, stride=2), nn.ReLU(), nn.Flatten())
+        self.near = nn.Sequential(
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1, stride=2), nn.ReLU(), nn.Flatten())
+        with torch.no_grad():
+            full_out = self.full(torch.zeros(1, 17, rows, cols)).shape[1]
+            near_out = self.near(torch.zeros(1, 16, lrows, lcols)).shape[1]
         self.status = nn.Sequential(nn.Linear(space["status"].shape[0], 32), nn.ReLU())
-        self.head = nn.Sequential(nn.Linear(conv_out + 32, features_dim), nn.ReLU())
+        self.head = nn.Sequential(nn.Linear(full_out + near_out + 32, 512), nn.ReLU(),
+                                  nn.Linear(512, features_dim), nn.ReLU())
+
+    def chars(self, grid):
+        return self.embed(grid.long().clamp(0, 127)).permute(0, 3, 1, 2)
 
     def forward(self, obs):
-        chars = obs["screen"].long().clamp(0, 127)
-        x = self.embed(chars).permute(0, 3, 1, 2)
-        return self.head(torch.cat([self.conv(x), self.status(obs["status"])], dim=1))
+        visits = (obs["visits"].float() / 10).unsqueeze(1)
+        full = self.full(torch.cat([self.chars(obs["screen"]), visits], dim=1))
+        near = self.near(self.chars(obs["local"]))
+        return self.head(torch.cat([full, near, self.status(obs["status"])], dim=1))
 
 
 class EpisodeLog(BaseCallback):
@@ -92,7 +109,7 @@ def train() -> None:
     args = ap.parse_args()
 
     RL_DIR.mkdir(parents=True, exist_ok=True)
-    torch.set_num_threads(8)
+    torch.set_num_threads(16)
     envs = SubprocVecEnv([make_env(args.max_steps, args.read_wait_ms / 1000) for _ in range(args.envs)],
                          start_method="forkserver")
     if MODEL.exists() and not args.fresh:
@@ -100,9 +117,9 @@ def train() -> None:
         print(f"resuming {MODEL} after {model.num_timesteps:,} moves", flush=True)
     else:
         model = PPO("MultiInputPolicy", envs, device=args.device, n_steps=256, batch_size=1536,
-                    n_epochs=4, gamma=0.995, gae_lambda=0.95, ent_coef=0.01, learning_rate=2.5e-4,
+                    n_epochs=6, gamma=0.995, gae_lambda=0.95, ent_coef=0.01, learning_rate=3e-4,
                     policy_kwargs={"features_extractor_class": ScreenNet,
-                                   "net_arch": {"pi": [128], "vf": [128]}})
+                                   "net_arch": {"pi": [256], "vf": [256]}})
         print(f"new agent on {model.device}", flush=True)
     try:
         model.learn(args.steps, callback=EpisodeLog(every=50_000), reset_num_timesteps=False)

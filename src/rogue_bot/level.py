@@ -29,6 +29,7 @@ class Status:
     arm: int
     xlevel: int
     hunger: str
+    exp: int = 0
 
 
 def parse_status(line: str) -> Status | None:
@@ -37,7 +38,7 @@ def parse_status(line: str) -> Status | None:
         return None
     g = m.groups()
     return Status(int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]),
-                  int(g[6]), int(g[7]), g[9])
+                  int(g[6]), int(g[7]), g[9], int(g[8]))
 
 
 def find_player(lines: list[str]) -> Pos | None:
