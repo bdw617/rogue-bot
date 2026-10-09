@@ -21,6 +21,7 @@ BRACKET_RE = re.compile(r"\[(-?\d+)\]")
 SAFE_SCROLLS = ("enchant", "protect armor", "remove curse", "magic mapping", "identify")
 DEATH_MARKS = ("killed by", "died of", "top  ten")
 FOOD = ("food", "ration", "mango")
+OPTIONS_SCREEN = 'Show position only at end of run ("jump")'
 # Ice monster freezes (can kill outright); flytrap is stationary and holds you.
 AVOID = "IF"
 # Average melee damage by weapon base name.
@@ -146,6 +147,8 @@ class Bot:
                 self.send(" ", settle=False)
             elif any("--press space to continue--" in line for line in lines):
                 self.send(" ", settle=False)
+            elif any(OPTIONS_SCREEN in line for line in lines[:3]):
+                self.send("\x1b", settle=False)  # rogue's options screen: get out of it
             elif top.endswith("?") and not expect_prompt:
                 self.send("\x1b", settle=False)
             else:
@@ -223,10 +226,18 @@ class Bot:
         return next((i for i in self.inv if pred(i)), None)
 
     def use(self, cmd: str, item: Item, extra: str = "") -> None:
+        # A pending message would swallow the command key and turn the item letter into a
+        # command of its own ("o" opens the options screen), so clear it, and answer only
+        # prompts that actually appear.
+        self.settle()
         self.term.send(cmd)
         self.term.pump()
-        self.term.send(extra + item.letter if cmd in "zt" else item.letter)
-        self.term.pump()
+        for key in ([extra] if cmd in "zt" else []) + [item.letter]:
+            if not self.lines()[0].rstrip().endswith("?"):
+                self.send("\x1b")
+                return
+            self.term.send(key)
+            self.term.pump()
         if "identify" in self.lines()[0]:
             target = self.find(lambda i: i.has("potion", "scroll", "wand", "staff", "ring")
                                and i.unknown and i.letter != item.letter)
@@ -371,7 +382,8 @@ class Bot:
             self.unseen_turns = 6  # something we can't see is hitting us
         if self.unseen_turns and not monsters:
             self.unseen_turns -= 1
-            if st.hp <= max(4, st.maxhp * P.flee_frac) and self.emergency(pos, None):
+            if (st.hp <= max(4, st.maxhp * P.flee_frac) and self.items_ok()
+                    and self.emergency(pos, None)):
                 return
             return self.fight_unseen(pos)
         self.unseen_turns, self.unseen_dir = 0, None
@@ -379,7 +391,7 @@ class Bot:
         worst = max((self.worst_hit(chars[p], st.depth) for p in adjacent), default=0)
         # One more worst-case hit could kill us.
         critical = adjacent and st.hp <= max(3, worst * P.critical_mult)
-        if critical and self.emergency(pos, adjacent[0]):
+        if critical and self.items_ok() and self.emergency(pos, adjacent[0]):
             return
         losing = [p for p in monsters if p in self.approaching or p in adjacent]
         if (critical or st.hp <= st.maxhp * P.flee_frac) and losing and self.flee_downstairs(pos, monsters):

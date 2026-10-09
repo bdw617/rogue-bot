@@ -124,3 +124,40 @@ def test_search_heads_toward_a_monster_seen_beyond_the_walls():
     bot.hunt_secret((10, 24), set())
     assert bot.target is not None and bot.target[1] >= 27, bot.note
     assert "toward what we saw at (10, 60)" in bot.note
+
+
+class Prompting:
+    """Shows `prompt` on the top line after the first key, and records everything sent."""
+
+    alive = True
+
+    def __init__(self, prompt, top=""):
+        self.prompt, self.top, self.sent = prompt, top, []
+
+    def lines(self):
+        return [self.top.ljust(80)] + [" " * 80] * 23
+
+    def send(self, keys):
+        self.sent.append(keys)
+        self.top = self.prompt if len(self.sent) == 1 else ""
+
+    def pump(self, *a, **k):
+        return True
+
+
+def test_item_letter_is_only_sent_to_a_real_prompt():
+    from rogue_bot.bot import Item
+    scroll = Item("o", "a scroll entitled: 'bloto blech'")
+    asked = Prompting("read what?")
+    Bot(asked).use("r", scroll)
+    assert asked.sent[:2] == ["r", "o"]
+    swallowed = Prompting("")   # the "r" was eaten, no prompt shown
+    Bot(swallowed).use("r", scroll)
+    assert "o" not in swallowed.sent and "\x1b" in swallowed.sent
+
+
+def test_escapes_the_options_screen():
+    from rogue_bot.bot import OPTIONS_SCREEN
+    term = Prompting("", top=OPTIONS_SCREEN + ": False")
+    Bot(term).settle()
+    assert term.sent and term.sent[0] == "\x1b"
