@@ -17,6 +17,7 @@ rogue-bot = "rogue_bot:main"
 rogue-bot-tune = "rogue_bot.tune:main"
 rogue-bot-brain = "rogue_bot.brain:main"
 rogue-bot-report = "rogue_bot.report:main"
+rogue-bot-train = "rogue_bot.rl:train"
 
 [build-system]
 requires = ["uv_build>=0.11.24,<0.12.0"]
@@ -26,3 +27,18 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[project.optional-dependencies]
+rl = [
+    "torch>=2.13",
+    "stable-baselines3>=2.9",
+    "gymnasium>=1.4",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

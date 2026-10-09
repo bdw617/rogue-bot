@@ -75,6 +75,8 @@ def main() -> None:
     ap.add_argument("--read-idle-ms", type=float, default=15,
                     help="quiet gap that means rogue has finished drawing (default %(default)s)")
     ap.add_argument("--label", default="", help="tag stored with each game in the log")
+    ap.add_argument("--agent", choices=["rules", "rl"], default="rules",
+                    help="hand-written rules, or the reinforcement-learning agent (needs --extra rl)")
     ap.add_argument("--book", type=Path, default=DEFAULT_PATH,
                     help="monster book the bot learns from and adds to (default: %(default)s)")
     ap.add_argument("--params", type=Path, default=None,
@@ -86,6 +88,9 @@ def main() -> None:
     params_path = args.params or default_path()
     params = Params.load(params_path) if params_path.exists() else Params()
     tuned = "tuned params" if params_path.exists() else "default params"
+    if args.agent == "rl":
+        from .rl import play_rl_game  # needs the optional rl dependencies
+        tuned = "RL agent"
 
     game = 0
     results = []
@@ -114,12 +119,17 @@ def main() -> None:
     book = MonsterBook(args.book)
     try:
         for game in itertools.count(1) if args.games == 0 else range(1, args.games + 1):
-            r = play_game(book, params, args.rogue, args.max_steps, render=render,
-                          delay=args.delay if views else 0, trace=trace,
-                          read_wait=args.read_wait_ms / 1000, read_idle=args.read_idle_ms / 1000)
+            if args.agent == "rl":
+                r = play_rl_game(render=render, delay=args.delay if views else 0,
+                                 max_steps=args.max_steps, read_wait=args.read_wait_ms / 1000,
+                                 read_idle=args.read_idle_ms / 1000)
+            else:
+                r = play_game(book, params, args.rogue, args.max_steps, render=render,
+                              delay=args.delay if views else 0, trace=trace,
+                              read_wait=args.read_wait_ms / 1000, read_idle=args.read_idle_ms / 1000)
             results.append(r)
             with open(args.log, "a") as f:
-                f.write(json.dumps({"time": time.time(), "label": args.label,
+                f.write(json.dumps({"time": time.time(), "label": args.label, "agent": args.agent,
                                     "read_wait_ms": args.read_wait_ms,
                                     "read_idle_ms": args.read_idle_ms, **r.__dict__}) + "\n")
             if args.headless and not args.web:
@@ -132,7 +142,7 @@ def main() -> None:
             v.close()
     if results:
         depths = [r.depth for r in results]
-        print(f"[{tuned}: {params_path}] " if params_path.exists() else "[default params] ", end="")
+        print(f"[{tuned}] ", end="")
         print(f"{len(results)} games  avg depth {sum(depths) / len(depths):.1f}  "
               f"max depth {max(depths)}  avg gold {sum(r.gold for r in results) / len(results):.0f}")
         for i, r in enumerate(results, 1):

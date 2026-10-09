@@ -50,6 +50,22 @@ The bot only uses what a player sees on screen. It never reads rogue's memory, s
 
 The bot learns from its own fights and remembers across games. For each monster it records hits, misses, damage per hit, worst hit, swings needed to kill, and deaths caused, all parsed from combat messages and HP changes. It uses the book to decide when to fight, when to run, when to shoot, and when to use emergency items. The book lives at `~/.local/share/rogue-bot/monsters.json`; pass `--book PATH` to use another one.
 
+## Reinforcement learning agent
+
+A second player that knows nothing about rogue and learns by playing. It sees only the raw characters on the map plus the status-line numbers, and can only move (8 ways), search, or take the stairs. Its reward: going deeper and collecting gold are good, dying is bad, plus a small bonus for each new square it sees. The only rogue-specific code is interface plumbing (dismissing `-more-`, escaping prompts, noticing death).
+
+```bash
+uv sync --extra rl                         # PyTorch (CPU build), Stable-Baselines3, Gymnasium
+uv run --extra rl rogue-bot-train          # train with PPO on 24 games in parallel; resumes
+uv run --extra rl rogue-bot --agent rl --web   # watch the current agent play
+```
+
+- Training checkpoints to `~/.local/share/rogue-bot/rl/model.zip` every 50,000 moves and on exit, and resumes from it next time. `--fresh` starts a new agent.
+- Every training game is logged to `~/.local/share/rogue-bot/rl/episodes.jsonl` (return, depth, gold, cause of death).
+- `--device auto` uses CUDA when a CUDA build of PyTorch and a working GPU are present; the CPU build is the default because rogue itself, not the network, is the bottleneck.
+- Games played with `--agent rl` log in the same format as the rule bot, so `rogue-bot-report` compares them directly. The rule bot stays the default (`--agent rules`) as the baseline to beat.
+- Rogue seeds itself from the clock, so games can't be replayed with a fixed seed.
+
 ## Tuning: make it better over time
 
 The bot's judgement comes down to about 20 numbers in `params.py`: how much HP to rest back to, when to run from a fight, how far away to start shooting, how long to stay on a level, how hard to search. The tuner uses [Optuna](https://optuna.org) to find better values by playing real games:
@@ -104,6 +120,7 @@ You can run several benchmarks in parallel. Rogue seeds its dungeon from the clo
 | `tune.py` | The Optuna tuner |
 | `brain.py` | `rogue-bot-brain`: shows what's been learned |
 | `view.py`, `web.py` | The terminal view and the browser view |
+| `env.py`, `rl.py` | The reinforcement-learning environment, trainer and player |
 | `cli.py` | Live view, multiple games, results log |
 
 The bot's priority order each turn:
