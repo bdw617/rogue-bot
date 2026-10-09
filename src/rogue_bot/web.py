@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .bot import Bot
@@ -61,23 +62,30 @@ PAGE = """<!doctype html>
 <script>
   const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const $ = id => document.getElementById(id);
-  function connect() {
-    const events = new EventSource("/events");
-    events.onopen = () => { $("status").textContent = "live"; };
-    events.onerror = () => { $("status").textContent = "reconnecting..."; };
-    events.onmessage = e => {
-      const f = JSON.parse(e.data);
-      $("map").innerHTML = f.rows.map(row =>
-        row.map(([text, cls]) => cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)).join("")
-      ).join("\\n");
-      $("label").textContent = f.label;
-      $("step").textContent = f.step;
-      $("deepest").textContent = f.deepest;
-      $("note").textContent = f.note;
-      $("messages").innerHTML = f.messages.map(m => `<li>${esc(m)}</li>`).join("");
-    };
+  // Keep only the newest frame and draw it when the browser paints, so a busy or
+  // hidden tab never builds up a backlog.
+  let pending = null;
+  function draw() {
+    const f = pending;
+    pending = null;
+    if (!f) return;
+    $("map").innerHTML = f.rows.map(row =>
+      row.map(([text, cls]) => cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)).join("")
+    ).join("\\n");
+    $("label").textContent = f.label;
+    $("step").textContent = f.step;
+    $("deepest").textContent = f.deepest;
+    $("note").textContent = f.note;
+    $("messages").innerHTML = f.messages.map(m => `<li>${esc(m)}</li>`).join("");
   }
-  connect();
+  const events = new EventSource("/events");  // reconnects by itself if the bot restarts
+  events.onopen = () => { $("status").textContent = "live"; };
+  events.onerror = () => { $("status").textContent = "bot stopped: waiting for it to restart..."; };
+  events.onmessage = e => {
+    const first = pending === null;
+    pending = JSON.parse(e.data);
+    if (first) requestAnimationFrame(draw);
+  };
 </script>
 </body>
 </html>
@@ -135,10 +143,12 @@ class WebView:
         self.url = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}/"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def stream(self, out) -> None:
+    def stream(self, out, max_fps: float = 10) -> None:
+        """Send the newest frame at most max_fps times a second; skipped frames are dropped."""
         seen = -1
         try:
             while True:
+                time.sleep(1 / max_fps)
                 with self.changed:
                     self.changed.wait_for(lambda: self.seq != seen, timeout=15)
                     data, now = self.latest, self.seq
