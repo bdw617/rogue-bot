@@ -105,3 +105,40 @@ def test_masks_allow_only_matching_items():
     allowed = {ACTION_NAMES[i] for i in np.flatnonzero(env.action_masks())}
     assert {"eat a", "quaff f", "take stairs", "search"} <= allowed
     assert "wield c" not in allowed and "quaff a" not in allowed and "read f" not in allowed
+
+
+class FrozenScreen:
+    alive = True
+
+    def __init__(self, rows):
+        self.rows = [r.ljust(80) for r in rows] + [" " * 80] * (24 - len(rows))
+
+    def lines(self):
+        return self.rows
+
+
+def test_targets_list_what_it_can_see_and_reach():
+    import numpy as np
+    from rogue_bot.env import ACTION_NAMES, RogueEnv
+    from rogue_bot.level import LevelMap, find_player
+    env = RogueEnv()
+    env.term = FrozenScreen([
+        "",
+        "   ------------         ",
+        "   |..@.....!.+         ",
+        "   |....%.....|         ",
+        "   |.........S|         ",
+        "   ------------         ",
+    ])
+    env.level, env.inventory = LevelMap(), {}
+    env.level.update(env.term.lines(), find_player(env.term.lines()))
+    env.pos = (1, 6)
+    targets = env._targets()
+    kinds = {k: p for k, p, _ in targets}
+    assert kinds["item"] == (2, 12) and kinds["stairs"] == (3, 8)
+    assert kinds["door"] == (2, 14) and kinds["monster"] == (4, 13)
+    env.targets = targets
+    allowed = {ACTION_NAMES[i] for i in np.flatnonzero(env.action_masks())}
+    assert f"go to target {len(targets) - 1}" in allowed and f"go to target {len(targets)}" not in allowed
+    feats = env._target_features()
+    assert feats[:len(targets), -1].all() and not feats[len(targets):].any()

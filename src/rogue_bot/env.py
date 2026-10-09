@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import gymnasium as gym
 import numpy as np
 
-from .level import MAP_BOTTOM, MAP_TOP, LevelMap, find_player, parse_status
+from .level import MAP_BOTTOM, MAP_TOP, LevelMap, direction, find_player, parse_status
 from .term import COLS, Terminal
 
 MOVES = ["h", "j", "k", "l", "y", "u", "b", "n"]
@@ -33,9 +33,16 @@ LETTERS = "abcdefghijklmnopqrstuvwxyz"
 # Item commands and the kind of item each applies to.
 ITEM_COMMANDS = {"q": "potion", "r": "scroll", "w": "weapon", "W": "armor", "e": "food"}
 ITEM_VERBS = {"q": "quaff", "r": "read", "w": "wield", "W": "wear", "e": "eat"}
-ACTIONS = MOVES + ["s", ">"] + [cmd + letter for cmd in ITEM_COMMANDS for letter in LETTERS]
-ACTION_NAMES = MOVE_NAMES + ["search", "take stairs"] + [
-    f"{ITEM_VERBS[cmd]} {letter}" for cmd in ITEM_COMMANDS for letter in LETTERS]
+# Points of interest it can travel to in one decision, and how many of each kind it's offered.
+TARGET_KINDS = {"item": 4, "stairs": 1, "door": 4, "unexplored": 4, "monster": 3}
+MAX_TARGETS = 16
+TARGET_FEATURES = len(TARGET_KINDS) + 5  # kind one-hot, row offset, column offset, distance, char, valid
+JOURNEY_STEPS = 40                       # longest trip before control comes back anyway
+ACTIONS = (MOVES + ["s", ">"] + [cmd + letter for cmd in ITEM_COMMANDS for letter in LETTERS]
+           + [f"go{i}" for i in range(MAX_TARGETS)])
+ACTION_NAMES = (MOVE_NAMES + ["search", "take stairs"]
+                + [f"{ITEM_VERBS[cmd]} {letter}" for cmd in ITEM_COMMANDS for letter in LETTERS]
+                + [f"go to target {i}" for i in range(MAX_TARGETS)])
 MAP_ROWS = MAP_BOTTOM - MAP_TOP + 1
 LOCAL = (11, 21)  # close-up view centred on the agent
 DEATH_MARKS = ("killed by", "died of", "top  ten")
@@ -189,7 +196,9 @@ class RogueEnv(gym.Env):
             "visits": gym.spaces.Box(0, 10, (MAP_ROWS, COLS), np.uint8),
             "status": gym.spaces.Box(0.0, 10.0, (8,), np.float32),
             "pack": gym.spaces.Box(-10.0, 10.0, (len(LETTERS), SLOT_FEATURES), np.float32),
+            "targets": gym.spaces.Box(-5.0, 5.0, (MAX_TARGETS, TARGET_FEATURES), np.float32),
         })
+        self.targets: list[tuple[str, tuple[int, int], int]] = []
         self.term: Terminal | None = None
         self.messages: list[str] = []
         self.turn_msgs: list[str] = []
@@ -311,12 +320,71 @@ class RogueEnv(gym.Env):
                         status["depth"] / 26, status["str"] / 20, status["arm"] / 10,
                         status["xlevel"] / 20, status["hunger"] / 3, min(status["gold"], 5000) / 1000],
                        np.float32)
-        return {"screen": screen, "local": local, "visits": visits, "status": vec, "pack": self._pack()}
+        self.targets = self._targets()
+        return {"screen": screen, "local": local, "visits": visits, "status": vec,
+                "pack": self._pack(), "targets": self._target_features()}
+
+    def _abs_monsters(self) -> set[tuple[int, int]]:
+        return {(r + MAP_TOP, c) for r, c in self._monsters()}
+
+    def _targets(self) -> list[tuple[str, tuple[int, int], int]]:
+        """Points of interest it can see and reach: (kind, screen position, path length)."""
+        here = find_player(self._lines())
+        if not here:
+            return []
+        m, monsters = self.level, self._abs_monsters()
+        dist = {p: n for p, _, n in m.bfs(here, monsters)}
+        found = {kind: [] for kind in TARGET_KINDS}
+        found["item"] = [p for p in m.items if p in dist]
+        stairs = m.stairs()
+        if stairs in dist and stairs != here:
+            found["stairs"] = [stairs]
+        for p in dist:
+            if p == here:
+                continue
+            if m.t(p) == "+" and p not in m.visited:
+                found["door"].append(p)
+            elif m.is_frontier(p):
+                found["unexplored"].append(p)
+        targets = []
+        for kind, cap in TARGET_KINDS.items():
+            if kind == "monster":
+                near = sorted(monsters, key=lambda p: max(abs(p[0] - here[0]), abs(p[1] - here[1])))
+                targets += [(kind, p, max(abs(p[0] - here[0]), abs(p[1] - here[1]))) for p in near[:cap]]
+                continue
+            chosen = []
+            # Prefer unexplored spots a few squares off over ones right beside us.
+            order = sorted(found[kind], key=lambda p: (kind == "unexplored" and dist[p] < 3, dist[p]))
+            for p in order:
+                # Unexplored edges come in clumps; offer spread-out ones.
+                if kind == "unexplored" and any(max(abs(p[0] - q[0]), abs(p[1] - q[1])) < 4 for q in chosen):
+                    continue
+                chosen.append(p)
+                if len(chosen) == cap:
+                    break
+            targets += [(kind, p, dist[p]) for p in chosen]
+        return sorted(targets, key=lambda t: t[2])[:MAX_TARGETS]
+
+    def _target_features(self) -> np.ndarray:
+        feats = np.zeros((MAX_TARGETS, TARGET_FEATURES), np.float32)
+        here = find_player(self._lines())
+        kinds = list(TARGET_KINDS)
+        for i, (kind, (r, c), d) in enumerate(self.targets):
+            row = feats[i]
+            row[kinds.index(kind)] = 1
+            row[len(kinds)] = (r - here[0]) / 22 if here else 0
+            row[len(kinds) + 1] = (c - here[1]) / 80 if here else 0
+            row[len(kinds) + 2] = min(d, 200) / 100
+            row[len(kinds) + 3] = min(ord(self._lines()[r][c]), 127) / 127
+            row[len(kinds) + 4] = 1
+        return feats
 
     def action_masks(self) -> np.ndarray:
         """Which actions are possible right now: item commands only for a matching item."""
         mask = np.zeros(len(ACTIONS), bool)
         mask[:len(MOVES) + 2] = True
+        go = ACTIONS.index("go0")
+        mask[go:go + len(self.targets)] = True
         for i, (cmd, want) in enumerate(ITEM_COMMANDS.items()):
             for j, letter in enumerate(LETTERS):
                 desc = self.inventory.get(letter)
@@ -395,9 +463,53 @@ class RogueEnv(gym.Env):
 
     def step(self, action: int):
         key = ACTIONS[int(action)]
+        if key.startswith("go"):
+            i = int(key[2:])
+            r, died = self._journey(self.targets[i][1]) if i < len(self.targets) else self._act("s")
+        else:
+            r, died = self._act(key)
+        status = self.last_status
+        truncated = self.steps >= self.max_steps and not died
+        info = {}
+        if died or truncated:
+            info = {"depth": self.max_depth, "gold": status["gold"], "xlevel": status["xlevel"],
+                    "steps": self.steps, "cause": self._cause() if died else f"step limit ({self.max_steps})"}
+        return self._obs(status), r, died, truncated, info
+
+    def _journey(self, target: tuple[int, int]) -> tuple[float, bool]:
+        """Walk the shortest route to a target, one rewarded move at a time. Control comes back
+        early if we lose HP, a monster is next to us, a new monster shows up within 3 squares,
+        a step fails, or the level changes: it can travel far, but it can't ignore an attack."""
+        total, hp, depth = 0.0, self.last_status["hp"], self.last_status["depth"]
+        known = self._abs_monsters()
+        for _ in range(JOURNEY_STEPS):
+            here = find_player(self._lines())
+            if not here or here == target:
+                break
+            path = self.level.path(here, target, self._abs_monsters() - {target})
+            if not path:
+                break
+            r, died = self._act(direction(here, path[0]))
+            total += r
+            if died or self.steps >= self.max_steps:
+                return total, died
+            if find_player(self._lines()) == here:
+                self.level.blocked.add((here, path[0]))  # that way is shut; replan next time
+                break
+            now, me = self._abs_monsters(), find_player(self._lines())
+            close = {p for p in now if me and max(abs(p[0] - me[0]), abs(p[1] - me[1])) <= 3}
+            if (self.last_status["hp"] < hp or self._nearest_monster() <= 1 or close - known
+                    or self.last_status["depth"] != depth):
+                break
+            known |= now
+        return total, False
+
+    def _act(self, key: str) -> tuple[float, bool]:
+        """One rogue command and its reward. Returns (reward, died)."""
         near_before = self._nearest_monster()
         self.turn_msgs, self.pickups = [], 0
         events = {}
+        letter = ""
         if len(key) == 2:  # an item command: quaff/read/wield/wear/eat + slot letter
             cmd, letter = key[0], key[1]
             used = self.inventory.get(letter, "")
@@ -446,12 +558,7 @@ class RogueEnv(gym.Env):
         r = reward(before, status, events, self.rewards)
         self.max_depth = max(self.max_depth, status["depth"])
         self.last_status = status
-        truncated = self.steps >= self.max_steps and not died
-        info = {}
-        if died or truncated:
-            info = {"depth": self.max_depth, "gold": status["gold"], "xlevel": status["xlevel"],
-                    "steps": self.steps, "cause": self._cause() if died else f"step limit ({self.max_steps})"}
-        return self._obs(status), r, died, truncated, info
+        return r, died
 
     def close(self):
         if self.term:

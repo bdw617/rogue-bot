@@ -54,7 +54,9 @@ class ScreenNet(BaseFeaturesExtractor):
         self.status = nn.Sequential(nn.Linear(space["status"].shape[0], 32), nn.ReLU())
         slots, per_slot = space["pack"].shape
         self.pack = nn.Sequential(nn.Flatten(), nn.Linear(slots * per_slot, 128), nn.ReLU())
-        self.head = nn.Sequential(nn.Linear(full_out + near_out + 32 + 128, 512), nn.ReLU(),
+        n_targets, per_target = space["targets"].shape
+        self.targets = nn.Sequential(nn.Flatten(), nn.Linear(n_targets * per_target, 128), nn.ReLU())
+        self.head = nn.Sequential(nn.Linear(full_out + near_out + 32 + 128 + 128, 512), nn.ReLU(),
                                   nn.Linear(512, features_dim), nn.ReLU())
 
     def chars(self, grid):
@@ -64,7 +66,8 @@ class ScreenNet(BaseFeaturesExtractor):
         visits = (obs["visits"].float() / 10).unsqueeze(1)
         full = self.full(torch.cat([self.chars(obs["screen"]), visits], dim=1))
         near = self.near(self.chars(obs["local"]))
-        return self.head(torch.cat([full, near, self.status(obs["status"]), self.pack(obs["pack"])], dim=1))
+        return self.head(torch.cat([full, near, self.status(obs["status"]), self.pack(obs["pack"]),
+                                    self.targets(obs["targets"])], dim=1))
 
 
 class EpisodeLog(BaseCallback):
