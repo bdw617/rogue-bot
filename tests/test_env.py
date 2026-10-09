@@ -2,38 +2,63 @@ import pytest
 
 pytest.importorskip("gymnasium")
 
-from rogue_bot.env import Rewards, effect_value, item_key, kind, reward, strength
+from rogue_bot.env import Rewards, condition, effect_value, item_key, kind, reward, strength
 
-BASE = {"depth": 2, "max_depth": 2, "gold": 10, "exp": 5, "hp": 12}
+BASE = {"depth": 2, "max_depth": 2, "gold": 10, "exp": 5, "hp": 12, "maxhp": 12, "hunger": 0, "gear": 10}
+R = Rewards()
 
 
 def after(**changes):
     return {**{k: v for k, v in BASE.items() if k != "max_depth"}, **changes}
 
 
-def test_score_rewards():
-    assert reward(BASE, after(depth=3), {}) == 3.0
-    assert reward(BASE, after(gold=60), {}) == pytest.approx(1.0)
-    assert reward(BASE, after(), {"died": True}) == -10.0
-    assert reward({**BASE, "max_depth": 5}, after(depth=4), {}) == 0.0   # no credit for going back
+def shaped(state):
+    """The condition-shaping part for a move that ends in `state`."""
+    return R.gamma * condition(state, R) - condition(BASE, R)
 
 
-def test_exploring_rewards():
-    assert reward(BASE, after(), {"new_squares": 50}) == pytest.approx(0.5)
-    assert reward(BASE, after(), {"new_visit": True}) == pytest.approx(0.1)
-    assert reward(BASE, after(), {"new_rooms": 1}) == pytest.approx(2.0)
+def test_progress_rewards():
+    assert reward(BASE, after(depth=3), {}) == pytest.approx(R.step + 3 + shaped(after()))
+    assert reward(BASE, after(), {"stairs_found": True}) == pytest.approx(R.step + 1 + shaped(after()))
+    assert reward(BASE, after(), {"new_rooms": 1}) == pytest.approx(R.step + 1 + shaped(after()))
+    assert reward({**BASE, "max_depth": 5}, after(depth=4), {}) == pytest.approx(R.step + shaped(after()))
 
 
-def test_fighting_rewards():
-    assert reward(BASE, after(exp=8), {"kills": 1}) == pytest.approx(1.5 + 2.0)
-    assert reward(BASE, after(hp=8), {}) == pytest.approx(-0.2)
-    assert reward(BASE, after(), {"kited": True}) == pytest.approx(0.2)
-    assert reward(BASE, after(), {"hurt_attack": True}) == pytest.approx(-1.0)
-    assert Rewards().hurt_attack < 0 < Rewards().kite
-def test_item_rewards():
-    assert reward(BASE, after(), {"pickups": 2}) == pytest.approx(1.0)
-    assert reward(BASE, after(), {"gear_gain": 2.5}) == pytest.approx(2.5)
-    assert reward(BASE, after(), {"safe_use": True, "effect": -1.0}) == pytest.approx(-0.5)
+def test_revisiting_costs_more_the_longer_it_goes_on():
+    base = reward(BASE, after(), {})
+    assert reward(BASE, after(), {"revisits": 1}) == pytest.approx(base)          # second visit: free
+    third = reward(BASE, after(), {"revisits": 2})
+    tenth = reward(BASE, after(), {"revisits": 9})
+    assert third < base and tenth < third
+    assert reward(BASE, after(), {"revisits": 500}) == pytest.approx(base + R.revisit_cap)
+
+
+def test_condition_shaping_rewards_healing_and_cannot_be_farmed():
+    hurt = {**BASE, "hp": 6}
+    heal = reward(hurt, after(hp=12), {}) - R.step
+    harm = reward(BASE, after(hp=6), {}) - R.step
+    assert heal > 0 > harm
+    # Getting hurt and healing back, in a loop, never comes out ahead.
+    assert heal + harm < 1e-9
+    better_gear = reward(BASE, after(gear=12), {}) - R.step
+    assert better_gear > 0
+
+
+def test_eating_pays_only_when_hungry():
+    hungry = {**BASE, "hunger": 1}
+    assert reward(hungry, after(hunger=0), {"ate": True}) > 0
+    assert reward(BASE, after(), {"ate": True}) < reward(BASE, after(), {})
+
+
+def test_dying_costs_the_penalty_and_the_condition():
+    assert reward(BASE, after(hp=0), {"died": True}) == pytest.approx(R.step + R.death - condition(BASE, R))
+
+
+def test_fighting_and_item_rewards():
+    assert reward(BASE, after(exp=8), {"kills": 1}) - reward(BASE, after(), {}) == pytest.approx(0.9 + 1.0)
+    assert reward(BASE, after(), {"hurt_attack": True}) - reward(BASE, after(), {}) == pytest.approx(-0.5)
+    assert reward(BASE, after(), {"pickups": 2}) - reward(BASE, after(), {}) == pytest.approx(0.6)
+    assert reward(BASE, after(), {"safe_use": True, "effect": -1.0}) - reward(BASE, after(), {}) == pytest.approx(-0.8)
 
 
 def test_reading_the_pack():

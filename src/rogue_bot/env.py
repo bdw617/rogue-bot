@@ -8,9 +8,10 @@ It can move, search, take the stairs, and quaff, read, wield, wear or eat any pa
 Choices that are impossible (quaffing a sword, an empty slot) are masked out.
 
 The only rogue-specific code is interface plumbing (dismissing "-more-", escaping prompts,
-noticing death, reading the pack) and the reward, which spells out what we value: going
-deeper, gold, kills, exploring, picking things up, better gear, and good potion and scroll
-effects; losing HP, fighting while hurt, bad effects and dying cost.
+noticing death, reading the pack) and the reward, which spells out what we value (see
+Rewards): going deeper, finding the stairs, exploring, kills, items, eating when hungry and
+good potion and scroll effects pay; going round in circles, fighting while hurt, losing
+condition (HP, hunger, gear), bad effects and dying cost.
 
 Rogue shuffles what each potion and scroll looks like every game, so effect values are
 learned per game and forgotten at reset.
@@ -113,35 +114,62 @@ def effect_value(before: dict, after: dict, text: str) -> float:
 
 @dataclass
 class Rewards:
-    new_level: float = 3.0      # going down the stairs to a level not seen this game
-    gold: float = 0.02          # per piece of gold
-    exp: float = 0.5            # per experience point (killing things)
-    hp_lost: float = -0.05      # per hit point lost
-    new_square: float = 0.01    # curiosity: per map square seen for the first time this level
-    new_visit: float = 0.1      # curiosity: per square stood on for the first time this level
-    new_room: float = 2.0       # per room exposed for the first time this level
-    kill: float = 2.0           # per monster killed
-    kite: float = 0.2           # hurt, monster near, moved without losing ground or HP
-    hurt_attack: float = -1.0   # starting a fight while below full HP
-    pickup: float = 0.5         # per item picked up
-    stronger_gear: float = 1.0  # per point of armor or weapon strength above the best so far
-    safe_use: float = 0.5       # drinking or reading with no monster in sight
-    effect: float = 1.0         # times how good the potion or scroll's effect was
+    """What we value, from knowing rogue. Condition (HP, hunger, gear) is potential-based
+    shaping: improving it pays and worsening it costs, and a loop always nets zero, so it
+    can't be farmed."""
+    # Progress
+    new_level: float = 3.0       # each level deeper than before this game
+    stairs_found: float = 1.0    # first sight of the stairs on a level: the real sub-goal
+    new_room: float = 1.0        # each room exposed for the first time on a level
+    new_square: float = 0.01     # each map square seen for the first time on a level
+    new_visit: float = 0.05      # stepping onto a square for the first time on a level
+    revisit: float = -0.01       # per earlier visit, stepping onto a square for the 3rd+ time
+    revisit_cap: float = -0.1    # ...but never worse than this per step
+    step: float = -0.002         # every action: time is food
+    # Fighting
+    exp: float = 0.3             # per experience point
+    kill: float = 1.0            # per monster killed
+    hurt_attack: float = -0.5    # starting a fight below hurt_below of max HP
+    hurt_below: float = 0.75
+    # Condition potential: hp_weight * HP share - hunger_weight * hunger + gear_weight * gear
+    hp_weight: float = 2.0
+    hunger_weight: float = 0.5
+    gear_weight: float = 0.5
+    gamma: float = 0.995         # must match the learner's discount for exact shaping
+    # Items
+    gold: float = 0.01           # per piece of gold
+    pickup: float = 0.3          # per item picked up
+    eat_hungry: float = 0.5      # eating when hungry
+    eat_full: float = -0.5       # eating when not hungry wastes scarce food
+    safe_use: float = 0.2        # drinking or reading with no monster in sight
+    effect: float = 1.0          # times how good the potion or scroll's effect was
     death: float = -10.0
 
 
+def condition(state: dict, r: Rewards) -> float:
+    """How well-off we are: HP share, hunger level (0-3), equipped gear strength."""
+    return (r.hp_weight * state.get("hp", 0) / max(1, state.get("maxhp", 1))
+            - r.hunger_weight * state.get("hunger", 0) + r.gear_weight * state.get("gear", 0))
+
+
 def reward(before: dict, after: dict, events: dict, r: Rewards = Rewards()) -> float:
-    """Reward for one move: status before/after (depth, gold, exp, hp) plus what happened."""
-    total = r.new_level * max(0, after["depth"] - before["max_depth"])
+    """Reward for one move: status before/after plus what happened (see Rewards)."""
+    e = events.get
+    total = r.step
+    total += r.new_level * max(0, after["depth"] - before["max_depth"])
     total += r.gold * max(0, after["gold"] - before["gold"])
     total += r.exp * max(0, after.get("exp", 0) - before.get("exp", 0))
-    total += r.hp_lost * max(0, before.get("hp", 0) - after.get("hp", 0))
-    e = events.get
     total += r.new_square * e("new_squares", 0) + r.new_visit * e("new_visit", 0)
-    total += r.new_room * e("new_rooms", 0) + r.kill * e("kills", 0)
-    total += r.kite * e("kited", 0) + r.hurt_attack * e("hurt_attack", 0)
-    total += r.pickup * e("pickups", 0) + r.stronger_gear * e("gear_gain", 0)
+    if e("revisits", 0) >= 2:
+        total += max(r.revisit_cap, r.revisit * (e("revisits") - 1))
+    total += r.new_room * e("new_rooms", 0) + r.stairs_found * e("stairs_found", 0)
+    total += r.kill * e("kills", 0) + r.hurt_attack * e("hurt_attack", 0)
+    total += r.pickup * e("pickups", 0)
+    if e("ate"):
+        total += r.eat_hungry if before.get("hunger", 0) > 0 else r.eat_full
     total += r.safe_use * e("safe_use", 0) + r.effect * e("effect", 0)
+    # Condition shaping; after death there is no condition left to have.
+    total += (0.0 if e("died") else r.gamma * condition(after, r)) - condition(before, r)
     if e("died"):
         total += r.death
     return total
@@ -306,15 +334,16 @@ class RogueEnv(gym.Env):
         return min((max(abs(r - self.pos[0]), abs(c - self.pos[1])) for r, c in self._monsters()),
                    default=99)
 
-    def _track_position(self) -> bool:
-        """Note where the agent stands; True if it's a square it hasn't stood on this level."""
+    def _track_position(self) -> tuple[bool, int]:
+        """Note where the agent stands. Returns (moved, visits to this square before now)."""
         found = find_player(self._lines())
         if not found:
-            return False
-        self.pos = (found[0] - MAP_TOP, found[1])
-        first = self.visits[self.pos] == 0
-        self.visits[self.pos] += 1
-        return first
+            return False, 0
+        pos = (found[0] - MAP_TOP, found[1])
+        moved, self.pos = pos != self.pos, pos
+        before = self.visits[pos]
+        self.visits[pos] += 1
+        return moved, before
 
     def _new_squares(self) -> int:
         """Map squares showing something for the first time on this level."""
@@ -357,7 +386,8 @@ class RogueEnv(gym.Env):
         self.level = LevelMap()
         self.effects: dict[str, float] = {}  # potion/scroll kind -> how good it was, this game only
         self._read_inventory()
-        self.best_gear = self._gear()
+        self.last_status["gear"] = self._gear()
+        self.stairs_seen = False
         self._track_position()
         self._new_squares()
         self.rooms = self._rooms()
@@ -381,17 +411,22 @@ class RogueEnv(gym.Env):
         if status["depth"] != self.last_status["depth"]:
             # A new level: everything on it is new.
             self.seen, self.visits, self.level, self.rooms = set(), Counter(), LevelMap(), 0
+            self.stairs_seen = False
         events["died"] = died
         text = "  ".join(self.turn_msgs).lower()
         if not died:
-            events["new_visit"] = self._track_position()
+            moved, before_visits = self._track_position()
+            events["new_visit"] = moved and before_visits == 0
+            events["revisits"] = before_visits if moved else 0
+            if not self.stairs_seen and any("%" in row for row in self._lines()[MAP_TOP:MAP_BOTTOM + 1]):
+                self.stairs_seen = events["stairs_found"] = True
             events["new_squares"] = self._new_squares()
             rooms = self._rooms()
             events["new_rooms"], self.rooms = max(0, rooms - self.rooms), max(rooms, self.rooms)
             if self.inv_dirty:
                 self._read_inventory()
-            gear = self._gear()
-            events["gear_gain"], self.best_gear = max(0.0, gear - self.best_gear), max(gear, self.best_gear)
+            status = {**status, "gear": self._gear()}
+            events["ate"] = cmd == "e"
             if cmd in ("q", "r") and used:
                 value = effect_value(self.last_status, status, text)
                 self.effects[item_key(used)] = value
@@ -403,13 +438,10 @@ class RogueEnv(gym.Env):
         events["pickups"] = self.pickups
         swung = "you hit" in text or "you miss" in text or "defeated" in text
         events["kills"] = text.count("defeated")
-        hurt = self.last_status["hp"] < self.last_status["maxhp"]
+        hurt = self.last_status["hp"] < self.last_status["maxhp"] * self.rewards.hurt_below
         events["hurt_attack"] = swung and hurt and self.steps > self.fighting_until
         if swung:
             self.fighting_until = self.steps + 3
-        near_after = 99 if died else self._nearest_monster()
-        events["kited"] = (hurt and not swung and cmd is None and near_before <= 2 and near_after >= 2
-                           and near_after >= near_before and status["hp"] >= self.last_status["hp"])
         before = {**self.last_status, "max_depth": self.max_depth}
         r = reward(before, status, events, self.rewards)
         self.max_depth = max(self.max_depth, status["depth"])
