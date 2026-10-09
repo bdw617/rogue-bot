@@ -11,7 +11,7 @@ import time
 
 from .bot import Bot
 from .knowledge import DEFAULT_PATH, MonsterBook
-from .term import Terminal
+from .term import Terminal, state_dir
 
 COLORS = {"%": "\x1b[1;32m", "+": "\x1b[33m"}
 ITEM_COLOR, MONSTER_COLOR, RESET = "\x1b[36m", "\x1b[1;31m", "\x1b[0m"
@@ -77,9 +77,9 @@ class View:
         sys.stdout.flush()
 
 
-def wait_for_fresh_seed(lock_path: Path = Path("/tmp/rogue-bot-start.lock")) -> None:
+def wait_for_fresh_seed() -> None:
     """Rogue seeds from the clock: keep game starts across parallel runs >1s apart."""
-    with open(lock_path, "a+") as f:
+    with open(state_dir() / "start.lock", "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         f.seek(0)
         last = float(f.read() or 0)

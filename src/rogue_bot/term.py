@@ -6,23 +6,31 @@ import pty
 import select
 import signal
 import struct
-import tempfile
 import termios
 import time
+from pathlib import Path
 
 import pyte
 
 ROWS, COLS = 24, 80
 
 
+def state_dir() -> Path:
+    """Private per-user directory for the start lock and rogue's working files."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "rogue-bot"
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return base
+
+
 class Terminal:
     def __init__(self, argv: list[str], env: dict[str, str] | None = None):
         self.screen = pyte.Screen(COLS, ROWS)
         self.stream = pyte.ByteStream(self.screen)
+        workdir = state_dir()
         pid, fd = pty.fork()
         if pid == 0:
-            # Rogue drops rogue.esave in cwd when killed mid-game.
-            os.chdir(tempfile.gettempdir())
+            # Rogue drops rogue.esave in cwd when killed mid-game; keep it out of shared /tmp.
+            os.chdir(workdir)
             fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
             full_env = {**os.environ, **(env or {}), "TERM": "vt100",
                         "LINES": str(ROWS), "COLUMNS": str(COLS)}
