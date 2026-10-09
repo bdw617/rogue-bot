@@ -226,3 +226,27 @@ def test_probe_past_a_corridor_dead_end_before_searching():
     for t in [(15, 10), (14, 9), (14, 11)]:
         m.blocked.add((end, t))                     # all probes failed
     assert m.nearest((12, 2), m.is_frontier) is None
+
+
+def test_walls_facing_open_map_are_searched_before_pockets():
+    lines = screen({
+        3: "    ---------  ------",
+        4: "    |.......|  |....|",
+        5: "    |.......|  |....|",
+        6: "    ---------  ------",
+    })
+    m = LevelMap()
+    m.update(lines, (4, 6))
+    assert m.depth_behind((6, 8)) == 8               # below the room: open, unexplored map
+    assert m.depth_behind((5, 12)) == 2              # right wall: a 2-square gap, then a room
+    bottom, pocket = m.search_score((5, 8)), m.search_score((4, 11))
+    assert bottom[1] == 1 and bottom < pocket
+
+
+def test_unblock_forgets_failed_moves_but_keeps_known_rock():
+    m = LevelMap()
+    m.update(screen({5: "  #.."}), (5, 3))
+    m.blocked = {((5, 2), (6, 2)), ((5, 3), (5, 4))}   # a probe into rock, a failed step
+    assert m.unblock() is True
+    assert m.blocked == {((5, 2), (6, 2))}
+    assert m.unblock() is False                         # nothing left to forget: go search

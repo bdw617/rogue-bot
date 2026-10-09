@@ -474,8 +474,13 @@ class Bot:
                 self.note = "to stairs"
                 return self.move(pos, hit[0], hit[1])
 
-        if m.blocked:
-            m.unblock()
+        teleport = self.find(lambda i: i.has("scroll") and i.has("teleport"))
+        if teleport and not food and self.level_steps > P.level_budget:
+            # Stuck with no food: the scroll we saved for emergencies may land us somewhere new.
+            self.note = f"stuck and hungry: read {teleport.desc}"
+            return self.use("r", teleport)
+
+        if m.unblock():
             self.note = "unstick"
             return self.search(pos)
         return self.hunt_secret(pos, avoid)
@@ -577,8 +582,10 @@ class Bot:
         best = None
         for p, d, dist_ in m.bfs(pos, avoid):
             score = m.search_score(p)
-            if score is not None and (best is None or (score, dist_) < best[0]):
-                best = ((score, dist_), p, d)
+            # Within a round and kind of spot, the nearest one wins: walking costs food too.
+            key = score and (score[0], score[1], dist_, score[2])
+            if key is not None and (best is None or key < best[0]):
+                best = (key, p, d)
         if best is None or best[1] == pos:
             self.note = f"search here ({m.searches[pos]})"
             return self.search(pos, 5 if self.calm > 5 else 1)

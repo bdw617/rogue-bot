@@ -163,9 +163,13 @@ class LevelMap:
                     return False
         return True
 
-    def unblock(self) -> None:
-        """Forget failed moves, except probes into the dark: those squares are solid rock."""
-        self.blocked = {(a, b) for a, b in self.blocked if self.t(b) == " "}
+    def unblock(self) -> bool:
+        """Forget failed moves, except probes into the dark: those squares are solid rock.
+        Returns whether anything was forgotten."""
+        keep = {(a, b) for a, b in self.blocked if self.t(b) == " "}
+        changed = keep != self.blocked
+        self.blocked = keep
+        return changed
 
     def dead_end(self, p: Pos) -> bool:
         """A visited corridor square with at most one way on."""
@@ -305,7 +309,20 @@ class LevelMap:
             return None
         sweep = min(self.wall_searches[w] for w in walls) // self.wall_tier
         fresh = sum(self.wall_searches[w] // self.wall_tier == sweep for w in walls)
-        return (sweep, 1, -fresh)
+        # Walls with a lot of unexplored map behind them come first: that's where missing
+        # rooms can be. Small pockets between known rooms come after.
+        kind = 1 if max(self.depth_behind(w) for w in walls) >= 5 else 2
+        return (sweep, kind, -fresh)
+
+    def depth_behind(self, w: Pos) -> int:
+        """How many unexplored squares lie straight out from this wall square (up to 8)."""
+        best = 0
+        for dr, dc in ((-1, 0), (1, 0)) if self.t(w) == "-" else ((0, -1), (0, 1)):
+            n, (r, c) = 0, (w[0] + dr, w[1] + dc)
+            while n < 8 and MAP_TOP <= r <= MAP_BOTTOM and 0 <= c < COLS and self.terrain[r][c] == " ":
+                n, r, c = n + 1, r + dr, c + dc
+            best = max(best, n)
+        return best
 
     def hides_door(self, w: Pos) -> bool:
         """A wall square (not a corner) with unexplored map right behind it."""

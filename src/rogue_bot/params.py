@@ -43,8 +43,9 @@ class Params:
     level_budget: int = knob(600, 150, 2000)       # steps on a level before heading for the stairs
     rooms_before_stairs: int = knob(2, 1, 9)       # once this many rooms are seen, take known stairs
     loot_detour: int = knob(8, 0, 30)              # ...still grabbing items this many steps away
-    dead_end_tier: int = knob(40, 5, 80)           # searches at a dead end before moving on
-    wall_tier: int = knob(15, 3, 40)               # searches along a wall before moving on
+    # Each search finds an adjacent hidden door ~1 time in 5, so ~10 tries finds most of them.
+    dead_end_tier: int = knob(10, 4, 40)           # searches at a dead end per round
+    wall_tier: int = knob(10, 3, 30)               # searches covering each wall square per round
 
     @classmethod
     def ranges(cls) -> dict[str, tuple]:
