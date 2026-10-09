@@ -73,7 +73,7 @@ class LevelMap:
         self.terrain = [[" "] * COLS for _ in range(ROWS)]
         self.items: dict[Pos, str] = {}
         self.visited: set[Pos] = set()
-        self.item_done: set[Pos] = set()
+        self.pickup_tries: Counter[Pos] = Counter()  # times we stood on an item there
         self.blocked: set[tuple[Pos, Pos]] = set()
         self.searches: Counter[Pos] = Counter()
 
@@ -98,7 +98,9 @@ class LevelMap:
                     self.terrain[r][c] = ch
                     self.items.pop((r, c), None)
                 elif ch in ITEMS:
-                    if (r, c) not in self.item_done:
+                    # Rogue picks items up on contact; one still there after two visits
+                    # can't be taken (pack full), so stop going back for it.
+                    if self.pickup_tries[(r, c)] < 2:
                         self.items[(r, c)] = ch
                     if self.terrain[r][c] == " ":
                         self.terrain[r][c] = "."
@@ -109,7 +111,8 @@ class LevelMap:
         if self.t(player) == " ":
             self.terrain[player[0]][player[1]] = "."
         self.visited.add(player)
-        self.item_done.add(player)
+        if player in self.items:
+            self.pickup_tries[player] += 1
         self.items.pop(player, None)
         return monsters
 
@@ -188,6 +191,25 @@ class LevelMap:
                 best, best_d = score, d
         return best_d
 
+    def path(self, start: Pos, goal: Pos, avoid=frozenset()) -> list[Pos]:
+        """Squares from start (exclusive) to goal, or [] if unreachable."""
+        prev = {start: None}
+        q = deque([start])
+        while q:
+            cur = q.popleft()
+            if cur == goal:
+                out = []
+                while cur != start:
+                    out.append(cur)
+                    cur = prev[cur]
+                return out[::-1]
+            for d in DIRS:
+                nxt = step(cur, d)
+                if nxt not in prev and nxt not in avoid and self.can_step(cur, nxt):
+                    prev[nxt] = cur
+                    q.append(nxt)
+        return []
+
     def nearest(self, start: Pos, pred, avoid=frozenset(), allow_traps=False):
         for p, d, _ in self.bfs(start, avoid, allow_traps):
             if p != start and pred(p):
@@ -217,15 +239,32 @@ class LevelMap:
         if (dead_end or blind_door) and p in self.visited:
             # These almost always hide a corridor, and search only reaches 1 square.
             return (self.searches[p] // self.dead_end_tier, 0, 0)
-        elif t == "." and any(self.t(n) in "-|" for n in neighbors8(p)):
-            kind = 1
-        elif t == "#" and p in self.visited:
-            kind = 2  # a corridor can branch through a hidden segment
-        else:
+        if t != "." or not any(self.t(n) in "-|" for n in neighbors8(p)):
             return None
+        # A spot along a room wall, worth it only where the wall faces a lot of unexplored map.
         unknown = sum(self.terrain[r][c] == " "
                       for r in range(max(MAP_TOP, p[0] - 3), min(MAP_BOTTOM, p[0] + 3) + 1)
                       for c in range(max(0, p[1] - 3), min(COLS, p[1] + 4)))
-        if kind == 2 and unknown < 12:
+        if unknown < 15:
             return None
-        return (self.searches[p] // self.wall_tier, kind, -(unknown // 6))
+        return (self.searches[p] // self.wall_tier, 1, -(unknown // 6))
+
+    def rooms_seen(self) -> int:
+        """Rooms whose floor we've seen: groups of 4+ connected floor squares."""
+        seen: set[Pos] = set()
+        rooms = 0
+        for r in range(MAP_TOP, MAP_BOTTOM + 1):
+            for c in range(COLS):
+                if self.terrain[r][c] != "." or (r, c) in seen:
+                    continue
+                group, q = 0, deque([(r, c)])
+                seen.add((r, c))
+                while q:
+                    cur = q.popleft()
+                    group += 1
+                    for n in neighbors8(cur):
+                        if n not in seen and self.t(n) == ".":
+                            seen.add(n)
+                            q.append(n)
+                rooms += group >= 4
+        return rooms

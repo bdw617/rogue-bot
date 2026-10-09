@@ -44,3 +44,27 @@ def test_cursed_message_blocks_weapon_swaps():
     assert bot.weapon_stuck
     bot.log("you feel as though someone is watching over you")
     assert not bot.weapon_stuck
+
+
+def test_armor_class_reads_brackets_then_base_plus_enchant():
+    from rogue_bot.bot import Item
+    assert Item("b", "+1 ring mail [4] being worn").armor_class() == 4
+    assert Item("c", "-2 banded mail [4]").armor_class() == 4
+    assert Item("d", "scale mail").armor_class() == 4
+    assert Item("e", "+2 plate mail").armor_class() == 9
+    assert Item("f", "a pink potion").armor_class() is None
+
+
+def test_weapon_value_counts_enchantment():
+    from rogue_bot.bot import Item
+    good, bad = Item("c", "a +1,+1 mace in hand"), Item("h", "a -2,-2 mace")
+    assert good.weapon_value() > Item("g", "a mace").weapon_value() > bad.weapon_value()
+    assert Item("i", "a long sword").weapon_value() > good.weapon_value()
+    assert Item("j", "31 +0,+0 arrows").weapon_value() is None
+
+
+def test_best_melee_keeps_the_weapon_in_hand_on_ties():
+    from rogue_bot.bot import Item
+    bot = Bot(FakeTerm())
+    bot.inv = [Item("c", "a mace in hand"), Item("g", "a mace")]
+    assert bot.best_melee().letter == "c"

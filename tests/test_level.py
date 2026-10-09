@@ -63,7 +63,44 @@ def test_blind_door_is_top_search_spot():
     m.update(ROOM, (3, 3))
     m.visited.add((3, 8))
     assert m.search_score((3, 8)) == (0, 0, 0)
-    assert m.search_score((2, 2))[1] == 1
+    # A wall with almost nothing unexplored behind it isn't worth searching.
+    assert m.search_score((2, 2)) is None
+
+
+def test_search_dead_ends_and_open_walls_not_every_corridor_square():
+    lines = screen({
+        12: "       |....|",
+        13: "       |....+######",
+        14: "       ------",
+    })
+    m = LevelMap()
+    m.update(lines, (13, 18))
+    m.visited |= {(13, c) for c in range(12, 19)}
+    assert m.search_score((13, 18)) == (0, 0, 0)      # corridor dead end
+    assert m.search_score((13, 15)) is None           # middle of the corridor
+    assert m.search_score((12, 8))[1] == 1            # wall facing unexplored map
+
+
+def test_rooms_seen_counts_floor_areas_not_stray_squares():
+    lines = screen({
+        2: "|....|     |...|",
+        3: "|....+#####+...|",
+        4: "|....|  .  |...|",
+    })
+    m = LevelMap()
+    m.update(lines, (3, 2))
+    assert m.rooms_seen() == 2
+
+
+def test_items_get_a_second_chance_then_are_dropped():
+    m = LevelMap()
+    with_item = screen({3: "|..!.|"})
+    m.update(with_item, (3, 1))
+    for _ in range(2):
+        assert (3, 3) in m.items
+        m.update(screen({3: "|..@.|"}), (3, 3))   # stand on it; pickup fails
+        m.update(with_item, (3, 1))               # step off; it's still there
+    assert (3, 3) not in m.items
 
 
 def test_flee_step_runs_toward_open_space_not_dead_end():

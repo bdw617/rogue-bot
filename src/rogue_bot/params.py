@@ -41,6 +41,8 @@ class Params:
     # Exploration
     sleeper_cost_frac: float = knob(0.5, 0.1, 2.0) # leave sleepers alone if a fight costs > hp * this
     level_budget: int = knob(600, 150, 2000)       # steps on a level before heading for the stairs
+    rooms_before_stairs: int = knob(2, 1, 9)       # once this many rooms are seen, take known stairs
+    loot_detour: int = knob(8, 0, 30)              # ...still grabbing items this many steps away
     dead_end_tier: int = knob(40, 5, 80)           # searches at a dead end before moving on
     wall_tier: int = knob(15, 3, 40)               # searches along a wall before moving on
 

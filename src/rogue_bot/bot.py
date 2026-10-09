@@ -13,8 +13,11 @@ from .term import Terminal
 
 INV_RE = re.compile(r"(?:^|\s)([a-z])\) (.+?)\s*$")
 PICKUP_RE = re.compile(r"\([a-z]\)$")
-ARMOR = {"leather armor": 3, "ring mail": 4, "scale mail": 5, "chain mail": 6,
-         "banded mail": 7, "splint mail": 7, "plate mail": 8}
+# Base armor class by type; the game showed "+1 ring mail [4]", so ring mail is 3.
+ARMOR = {"leather armor": 2, "ring mail": 3, "scale mail": 4, "chain mail": 5,
+         "banded mail": 6, "splint mail": 6, "plate mail": 7}
+ENCHANT_RE = re.compile(r"([+-]\d+)(?:,([+-]\d+))?\s")
+BRACKET_RE = re.compile(r"\[(-?\d+)\]")
 SAFE_SCROLLS = ("enchant", "protect armor", "remove curse", "magic mapping", "identify")
 DEATH_MARKS = ("killed by", "died of", "top  ten")
 FOOD = ("food", "ration", "mango")
@@ -55,6 +58,26 @@ class Item:
     def unknown(self) -> bool:
         return " of " not in self.desc and "called" not in self.desc
 
+    def armor_class(self) -> int | None:
+        """Shown as [n] once known; otherwise base type plus any known enchantment."""
+        base = next((v for k, v in ARMOR.items() if k in self.desc), None)
+        if base is None:
+            return None
+        if m := BRACKET_RE.search(self.desc):
+            return int(m.group(1))
+        m = ENCHANT_RE.search(self.desc)
+        return base + (int(m.group(1)) if m else 0)
+
+    def weapon_value(self) -> float | None:
+        """Average damage: base type, plus known damage enchantment, plus half the hit bonus."""
+        base = next((v for k, v in MELEE.items() if k in self.desc), None)
+        if base is None:
+            return None
+        m = ENCHANT_RE.search(self.desc)
+        if not m or m.group(2) is None:
+            return base
+        return base + int(m.group(2)) + 0.5 * int(m.group(1))
+
 
 @dataclass
 class Bot:
@@ -92,6 +115,7 @@ class Bot:
         self.bad_weapons: set[str] = set()
         self.tried_wands: dict[str, int] = {}
         self.weapon_stuck = False            # a cursed weapon in hand blocks swapping
+        self.armor_stuck = False             # cursed armor can't be taken off
         self.repeats = 0                     # steps the bot has made no visible progress
         self.last_sig = None
         self.items_off_until = 0             # watchdog: skip item actions until this step
@@ -419,7 +443,14 @@ class Bot:
         avoid = (set(monsters) | keep_clear | {n for p in keep_clear for n in neighbors8(p)}) - {pos}
         stairs = m.stairs()
         # Long levels starve you; new levels bring food.
-        rush = stairs and (self.level_steps > P.level_budget or not food)
+        # Seen enough rooms and know the way down: take it, grabbing only nearby items.
+        rush = stairs and (self.level_steps > P.level_budget or not food
+                           or m.rooms_seen() >= P.rooms_before_stairs)
+        if rush and food:
+            hit = m.nearest(pos, lambda p: p in m.items, avoid)
+            if hit and len(m.path(pos, hit[0], avoid)) <= P.loot_detour:
+                self.note = f"grab item on the way -> {hit[0]}"
+                return self.move(pos, hit[0], hit[1])
         goals = [] if rush else [
             ("loot", lambda p: p in m.items),
             ("explore", m.is_frontier),
@@ -615,9 +646,12 @@ class Bot:
         return False
 
     def best_melee(self) -> Item | None:
-        weapons = [(v, i) for i in self.inv for k, v in MELEE.items()
-                   if k in i.desc and i.letter not in self.bad_weapons]
-        return max(weapons, key=lambda w: w[0])[1] if weapons else None
+        weapons = [i for i in self.inv if i.weapon_value() is not None
+                   and i.letter not in self.bad_weapons]
+        if not weapons:
+            return None
+        # Ties go to what's already in hand, so equal weapons don't get swapped back and forth.
+        return max(weapons, key=lambda i: (i.weapon_value(), "in hand" in i.desc))
 
     def safe_upgrade(self, st: Status) -> bool:
         best = self.best_melee()
@@ -639,15 +673,22 @@ class Bot:
                 self.note = f"read {scroll.desc}"
                 self.use("r", scroll)
                 return True
+        if self.armor_stuck:
+            return False
         worn = self.find(lambda i: "being worn" in i.desc)
-        worn_val = next((v for k, v in ARMOR.items() if worn and k in worn.desc), 0)
-        for item in self.inv:
-            val = next((v for k, v in ARMOR.items() if k in item.desc), 0)
-            if val > worn_val and item.letter not in self.tried_armor and "being worn" not in item.desc:
-                self.tried_armor.add(item.letter)
-                self.note = f"wear {item.desc}"
-                if worn:
-                    self.send("T")
-                self.use("W", item)
+        worn_ac = worn.armor_class() if worn else 0
+        better = [i for i in self.inv if i.armor_class() is not None and "being worn" not in i.desc
+                  and i.letter not in self.tried_armor and i.armor_class() > worn_ac]
+        if not better:
+            return False
+        item = max(better, key=lambda i: i.armor_class())
+        self.tried_armor.add(item.letter)
+        self.note = f"wear {item.desc} (now {worn.desc if worn else 'nothing'})"
+        if worn:
+            self.send("T")
+            self.refresh_inventory()
+            if self.find(lambda i: "being worn" in i.desc):
+                self.armor_stuck = True  # cursed armor won't come off
                 return True
-        return False
+        self.use("W", item)
+        return True
