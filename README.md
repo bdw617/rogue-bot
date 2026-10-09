@@ -34,7 +34,11 @@ The bot looks for `rogue` on your `PATH`, then falls back to `/usr/games/rogue`.
 uv run rogue-bot                       # one game, live screen
 uv run rogue-bot --games 0             # keep playing forever
 uv run rogue-bot --games 5 --delay 0.1 # slower, five games in a row
+uv run rogue-bot --games 0 --web       # also watch in a browser at http://127.0.0.1:8765/
+uv run rogue-bot --headless --web 9000 # browser only, on port 9000
 ```
+
+The browser view only listens on this machine (127.0.0.1). Watching in a browser or in the terminal doesn't change how the bot plays; it's the same game either way.
 
 Press `Ctrl-C` to stop. The bot's status panel sits under the game screen and shows its current goal and recent messages. The map also shows where the bot has been: the remembered map is dimmed, the trail is blue and the current target is magenta.
 
@@ -62,6 +66,22 @@ uv run rogue-bot-tune --trials 0     # skip new trials, just replay the best one
 - The winner goes to `~/.local/state/rogue-bot/params.json`, and `rogue-bot` loads it automatically. The live view shows "tuned params" when it does. Use `--params PATH` to play with a different set.
 - The study (`tune.db`) and a log of every tuning game (`tune-games.jsonl`) are in the same folder. Run the tuner again any time to keep improving.
 
+## What it remembers between runs
+
+Everything the bot learns is saved to files, so each run picks up where the last one left off.
+
+| File | What's in it | Written by |
+|---|---|---|
+| `~/.local/share/rogue-bot/monsters.json` | The monster book: hits, damage, worst hit, swings to kill, deaths caused, and which monsters are too fast to run from | Every game `rogue-bot` plays |
+| `~/.local/state/rogue-bot/params.json` | The tuned judgement numbers | `rogue-bot-tune`, when a new set wins its replay |
+| `~/.local/state/rogue-bot/tune.db` | Every tuning trial so far | `rogue-bot-tune` |
+
+To see what it has learned:
+
+```bash
+uv run rogue-bot-brain
+```
+
 ## Benchmark
 
 ```bash
@@ -82,6 +102,8 @@ You can run several benchmarks in parallel. Rogue seeds its dungeon from the clo
 | `knowledge.py` | The monster book |
 | `params.py` | The judgement numbers and the ranges the tuner may try |
 | `tune.py` | The Optuna tuner |
+| `brain.py` | `rogue-bot-brain`: shows what's been learned |
+| `view.py`, `web.py` | The terminal view and the browser view |
 | `cli.py` | Live view, multiple games, results log |
 
 The bot's priority order each turn:

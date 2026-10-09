@@ -13,70 +13,8 @@ from .bot import Bot, Result
 from .knowledge import DEFAULT_PATH, MonsterBook
 from .params import Params, default_path
 from .term import Terminal, state_dir
-
-COLORS = {"%": "\x1b[1;32m", "+": "\x1b[33m"}
-ITEM_COLOR, MONSTER_COLOR, RESET = "\x1b[36m", "\x1b[1;31m", "\x1b[0m"
-PLAYER = "\x1b[1;30;43m"
-REMEMBERED = "\x1b[2;37m"
-TRAIL_BG, TARGET_BG = "\x1b[44m", "\x1b[45m"
-
-
-def paint(bot: Bot) -> list[str]:
-    """Game screen plus remembered map, the bot's recent trail, and its current target."""
-    lines = bot.lines()
-    terrain = bot.map.terrain
-    trail = set(bot.trail)
-    rows = []
-    for r, line in enumerate(lines):
-        if not 1 <= r <= 22:
-            rows.append(line)
-            continue
-        out = []
-        for c, ch in enumerate(line):
-            if ch == "@":
-                out.append(f"{PLAYER}@{RESET}")
-                continue
-            style = ""
-            if ch == " " and terrain[r][c] != " ":
-                ch, style = terrain[r][c], REMEMBERED
-            elif ch.isupper():
-                style = MONSTER_COLOR
-            elif ch in "*!?/=):],":
-                style = ITEM_COLOR
-            else:
-                style = COLORS.get(ch, "")
-            if (r, c) == bot.target:
-                style += TARGET_BG
-            elif (r, c) in trail:
-                style += TRAIL_BG
-            out.append(f"{style}{ch}{RESET}" if style else ch)
-        rows.append("".join(out))
-    return rows
-
-
-class View:
-    def __init__(self, game_label):
-        self.game_label = game_label
-        sys.stdout.write("\x1b[?1049h\x1b[?25l")
-
-    def __call__(self, bot: Bot) -> None:
-        r = bot.result
-        rows = paint(bot)
-        rows.append("-" * 80)
-        rows.append(f" {self.game_label()}  step {r.steps}  deepest {r.depth}")
-        rows.append(f" bot: {bot.note[:72]}")
-        rows.append(f" \x1b[44m \x1b[0m trail  \x1b[45m \x1b[0m target  \x1b[2;37m#\x1b[0m remembered map")
-        rows += [f"  - {msg[:74]}" for msg in list(bot.messages)[-3:]]
-        # Absolute positioning so a short terminal truncates instead of scrolling.
-        height = shutil.get_terminal_size((80, 24)).lines
-        out = [f"\x1b[{i + 1};1H{row}\x1b[K" for i, row in enumerate(rows[:height])]
-        sys.stdout.write("".join(out) + "\x1b[J")
-        sys.stdout.flush()
-
-    def close(self) -> None:
-        sys.stdout.write("\x1b[?25h\x1b[?1049l")
-        sys.stdout.flush()
-
+from .view import TerminalView
+from .web import WebView
 
 def wait_for_fresh_seed() -> None:
     """Rogue seeds from the clock: keep game starts across parallel runs >1s apart."""
@@ -113,7 +51,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Play BSD rogue automatically.")
     ap.add_argument("--games", type=int, default=1, help="0 = keep playing forever")
     ap.add_argument("--delay", type=float, default=0.01, help="seconds between moves")
-    ap.add_argument("--headless", action="store_true", help="no live screen")
+    ap.add_argument("--headless", action="store_true", help="no live screen in the terminal")
+    ap.add_argument("--web", nargs="?", const=8765, type=int, metavar="PORT",
+                    help="also show the game in a browser at http://localhost:PORT (default 8765)")
     ap.add_argument("--max-steps", type=int, default=30000)
     ap.add_argument("--rogue", default=ROGUE)
     ap.add_argument("--log", default="results.jsonl")
@@ -139,24 +79,35 @@ def main() -> None:
         return (f"game {game}{total}  so far: avg depth {sum(depths) / len(depths):.1f}, "
                 f"best {max(depths)}")
 
-    view = None if args.headless else View(label)
+    views = []
+    if args.web:
+        try:
+            views.append(WebView(label, args.web))
+        except OSError as e:
+            sys.exit(f"can't serve the browser view on port {args.web}: {e}")
+        print(f"watch in your browser: {views[-1].url}", flush=True)
+        if not args.headless:
+            time.sleep(2)  # leave the URL on screen for a moment before the game takes over
+    if not args.headless:
+        views.append(TerminalView(label))
+    render = (lambda bot: [v(bot) for v in views]) if views else None
     trace = open(args.trace, "a", buffering=1) if args.trace else None
     book = MonsterBook(args.book)
     try:
         for game in itertools.count(1) if args.games == 0 else range(1, args.games + 1):
-            r = play_game(book, params, args.rogue, args.max_steps, render=view,
-                          delay=0 if args.headless else args.delay, trace=trace)
+            r = play_game(book, params, args.rogue, args.max_steps, render=render,
+                          delay=args.delay if views else 0, trace=trace)
             results.append(r)
             with open(args.log, "a") as f:
                 f.write(json.dumps({"time": time.time(), **r.__dict__}) + "\n")
-            if args.headless:
+            if args.headless and not args.web:
                 print(f"game {game}: depth {r.depth} gold {r.gold} xl {r.xlevel} "
                       f"steps {r.steps} :: {r.cause}", flush=True)
     except KeyboardInterrupt:
         pass
     finally:
-        if view:
-            view.close()
+        for v in views:
+            v.close()
     if results:
         depths = [r.depth for r in results]
         print(f"[{tuned}: {params_path}] " if params_path.exists() else "[default params] ", end="")
