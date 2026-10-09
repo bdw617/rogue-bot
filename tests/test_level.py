@@ -183,3 +183,24 @@ def test_bot_walks_out_through_a_door_into_the_unseen():
     m.blocked.add(((11, 62), (11, 61)))
     m.blocked.add(((14, 69), (15, 69)))
     assert m.nearest((13, 63), lambda p: m.t(p) == " ") is None
+
+
+def test_stairs_in_an_unlit_room_are_reachable():
+    # From a stalled game: stairs visible in a dark room whose floor was never drawn.
+    lines = screen({
+        1: "    -----------",
+        2: "    |         |",
+        3: "    |         +###",
+        4: "    |%        |  #",
+        5: "    |         |  #",
+        6: "    -----------  #",
+        7: "                 #@",
+    })
+    m = LevelMap()
+    m.update(lines, (7, 18))
+    assert m.inside_room((4, 8)) and not m.inside_room((7, 10))
+    stairs = m.stairs()
+    assert stairs == (4, 5)
+    assert m.nearest((7, 18), lambda p: p == stairs) is not None
+    # Unknown rock outside rooms is still off limits.
+    assert not m.can_step((7, 17), (8, 17))

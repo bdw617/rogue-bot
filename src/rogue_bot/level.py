@@ -77,6 +77,9 @@ class LevelMap:
         self.blocked: set[tuple[Pos, Pos]] = set()
         self.searches: Counter[Pos] = Counter()
         self.wall_searches: Counter[Pos] = Counter()  # searches that covered each wall square
+        self.version = 0                    # bumped whenever remembered terrain changes
+        self._room_cache: dict[Pos, bool] = {}
+        self._room_cache_version = -1
 
     def t(self, p: Pos) -> str:
         r, c = p
@@ -98,8 +101,11 @@ class LevelMap:
                 if hallucinating and (ch in ITEMS or ch == "%"):
                     if self.terrain[r][c] == " ":
                         self.terrain[r][c] = "."
+                        self.version += 1
                     continue
                 if ch in "-|.#+%^":
+                    if self.terrain[r][c] != ch:
+                        self.version += 1
                     self.terrain[r][c] = ch
                     self.items.pop((r, c), None)
                 elif ch in ITEMS:
@@ -109,12 +115,15 @@ class LevelMap:
                         self.items[(r, c)] = ch
                     if self.terrain[r][c] == " ":
                         self.terrain[r][c] = "."
+                        self.version += 1
                 elif ch.isupper():
                     monsters.append((r, c))
                     if self.terrain[r][c] == " ":
                         self.terrain[r][c] = "."
+                        self.version += 1
         if self.t(player) == " ":
             self.terrain[player[0]][player[1]] = "."
+            self.version += 1
         self.visited.add(player)
         if player in self.items:
             self.pickup_tries[player] += 1
@@ -134,15 +143,42 @@ class LevelMap:
         if t == " ":
             # Rogue doesn't draw the square outside a door until you step out of the
             # doorway, but a door always leads somewhere: allow stepping straight out.
-            return self.t(a) == "+" and (r1 == r2 or c1 == c2)
+            # Blank squares inside a room's walls are an unlit room's floor.
+            if self.t(a) == "+":
+                return r1 == r2 or c1 == c2
+            if not self.inside_room(b):
+                return False
+            t = "."
         if t not in WALKABLE and not (allow_traps and t == "^"):
             return False
         if r1 != r2 and c1 != c2:
             if self.t(a) == "+" or t == "+":
                 return False
-            if self.terrain[r1][c2] == " " or self.terrain[r2][c1] == " ":
-                return False
+            for corner in ((r1, c2), (r2, c1)):
+                if self.t(corner) == " " and not self.inside_room(corner):
+                    return False
         return True
+
+    def inside_room(self, p: Pos) -> bool:
+        """Is this blank square enclosed by one room's walls on all four sides?"""
+        if self._room_cache_version != self.version:
+            self._room_cache, self._room_cache_version = {}, self.version
+        if p not in self._room_cache:
+            self._room_cache[p] = all(self._wall_toward(p, dr, dc, ends)
+                                      for dr, dc, ends in ((0, -1, "|+"), (0, 1, "|+"),
+                                                           (-1, 0, "-+"), (1, 0, "-+")))
+        return self._room_cache[p]
+
+    def _wall_toward(self, p: Pos, dr: int, dc: int, ends: str) -> bool:
+        r, c = p[0] + dr, p[1] + dc
+        while MAP_TOP <= r <= MAP_BOTTOM and 0 <= c < COLS:
+            ch = self.terrain[r][c]
+            if ch in ends:
+                return True
+            if ch not in " .%^":
+                return False
+            r, c = r + dr, c + dc
+        return False
 
     def bfs(self, start: Pos, avoid: set[Pos] = frozenset(), allow_traps: bool = False):
         """Yield (pos, first_step_dir, dist) in BFS order from start."""
