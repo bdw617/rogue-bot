@@ -448,6 +448,8 @@ class Bot:
         spare_food = sum(i.has(*FOOD) for i in self.inv) >= 2
         full_rest = spare_food and (st.xlevel <= P.full_rest_xl or any(p not in scary for p in monsters))
         rest_to = st.maxhp if full_rest else st.maxhp * (P.rest_frac if food else P.rest_frac_no_food)
+        if food or not hungry:
+            rest_to = max(rest_to, st.maxhp * P.engage_hp_frac)  # heal before the next fight
         if st.hp < rest_to and not coming:
             self.note = f"rest (hp {st.hp}/{st.maxhp})"
             return self.search(pos, 10 if self.calm > 5 else 1)
@@ -458,6 +460,8 @@ class Bot:
         # Don't wake sleepers we'd struggle to beat, or step next to freezers.
         sleepers = {p for p in monsters if self.still.get(p, 0) >= 3
                     and self.fight_cost(chars[p], st.depth) > st.hp * P.sleeper_cost_frac}
+        if st.hp < st.maxhp * P.engage_hp_frac:
+            sleepers = set(monsters)  # too hurt to start anything: give every monster room
         keep_clear = scary | sleepers
         avoid = (set(monsters) | keep_clear | {n for p in keep_clear for n in neighbors8(p)}) - {pos}
         stairs = m.stairs()
@@ -551,8 +555,11 @@ class Bot:
             return False
         worst = max(self.worst_hit(chars[p], st.depth) for p in chasers)
         cost = sum(self.fight_cost(chars[p], st.depth) for p in chasers)
-        # Running only pays while there's HP to regenerate, and a short fight is worth finishing.
-        if not (st.hp < st.maxhp * P.kite_hp_frac and cost + worst > st.hp + P.kite_margin):
+        # Running only pays while there's HP to regenerate, and a short fight is worth finishing,
+        # unless we're too hurt to take on a new fight at all.
+        hurt = st.hp < st.maxhp * P.engage_hp_frac and not adjacent
+        losing = cost + worst > st.hp + P.kite_margin
+        if not (st.hp < st.maxhp * P.kite_hp_frac and (losing or hurt)):
             self.kiting = 0
             return False
         d = self.map.flee_step(pos, chasers, set(monsters))
@@ -626,10 +633,13 @@ class Bot:
         bow = self.find(lambda i: i.has("bow"))
         wand = self.find(lambda i: i.has("wand", "staff") and i.unknown
                          and self.tried_wands.get(i.letter, 0) < 2)
+        hurt = st.hp < st.maxhp * self.params.engage_hp_frac
         for p in sorted(monsters, key=lambda p: dist(p, pos)):
             d = self.line_of_fire(pos, p, set(monsters))
             if not d or (chars[p] in AVOID and dist(p, pos) < 3):
                 continue
+            if hurt and p not in self.approaching:
+                continue  # a shot wakes it up: don't start a fight while hurt
             # A fight we'd likely lose is worth spending an unknown wand on.
             if wand and p in self.approaching and self.fight_cost(chars[p], st.depth) > st.hp * self.params.wand_cost_frac:
                 self.tried_wands[wand.letter] = self.tried_wands.get(wand.letter, 0) + 1

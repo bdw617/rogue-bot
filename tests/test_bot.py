@@ -177,3 +177,22 @@ def test_throw_sends_direction_without_waiting_for_a_prompt():
     term = SilentDirection("")
     Bot(term).use("t", Item("e", "31 +0,+0 arrows"), extra="l")
     assert term.sent[:3] == ["t", "l", "e"]
+
+
+def test_hurt_bot_backs_off_from_an_approaching_monster():
+    from rogue_bot.level import LevelMap, parse_status
+    rows = [" " * 80] * 24
+    rows[5] = "     |...........|".ljust(80)
+    rows[6] = "     |.@...S.....|".ljust(80)
+    rows[7] = "     |...........|".ljust(80)
+    rows[4] = rows[8] = "     -------------".ljust(80)
+    bot = Bot(FakeTerm())
+    bot.map = LevelMap()
+    bot.map.update(rows, (6, 7))
+    bot.approaching = {(6, 11)}
+    hurt = parse_status("Level: 2  Gold: 0      Hp: 12(20)   Str: 16(16) Arm: 4  Exp: 2/20")
+    assert bot.kite(hurt, (6, 7), [(6, 11)], [], {(6, 11): "S"}, 0)
+    assert bot.note.startswith("kite S")
+    healthy = parse_status("Level: 2  Gold: 0      Hp: 19(20)   Str: 16(16) Arm: 4  Exp: 2/20")
+    bot.kiting = 0
+    assert not bot.kite(healthy, (6, 7), [(6, 11)], [], {(6, 11): "S"}, 0)

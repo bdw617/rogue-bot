@@ -18,6 +18,7 @@ class Params:
     critical_mult: float = knob(1.0, 0.5, 2.5)     # use emergency items at hp <= worst hit * this
     flee_frac: float = knob(0.4, 0.15, 0.7)        # run for the stairs below this share of max HP
     flee_stairs_dist: int = knob(20, 5, 40)        # ...if the stairs are this close
+    engage_hp_frac: float = knob(0.75, 0.3, 1.0)   # below this share of HP, heal before new fights
     # Kiting (running from a fight we'd lose)
     kite_margin: float = knob(1.0, -3.0, 8.0)      # kite when cost + worst hit > hp + this
     kite_hp_frac: float = knob(0.9, 0.5, 1.0)      # only kite below this share of max HP
