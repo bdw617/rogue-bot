@@ -168,4 +168,7 @@ class WebView:
             self.changed.notify_all()
 
     def close(self) -> None:
-        self.server.shutdown()
+        # Never let a stuck shutdown keep the process alive; the server thread is a daemon anyway.
+        stopper = threading.Thread(target=self.server.shutdown, daemon=True)
+        stopper.start()
+        stopper.join(timeout=1)
