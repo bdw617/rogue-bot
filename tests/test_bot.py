@@ -103,3 +103,24 @@ def test_finds_and_keeps_hitting_an_invisible_attacker():
     assert ((5, 7), (5, 8)) not in bot.map.blocked
     bot.fight_unseen((5, 7))
     assert bot.note == "swing l at unseen attacker"
+
+
+def test_search_heads_toward_a_monster_seen_beyond_the_walls():
+    from rogue_bot.level import LevelMap
+    rows = {
+        8: "                    ----------",
+        9: "                    |........|",
+        10: "                    |........|",
+        11: "                    |........|",
+        12: "                    ----------",
+    }
+    screen = [" " * 80] * 24
+    for r, text in rows.items():
+        screen[r] = text.ljust(80)
+    bot = Bot(FakeTerm())
+    bot.map = LevelMap()
+    bot.map.update(screen, (10, 24))
+    bot.map.seen_monsters.add((10, 60))   # a monster glimpsed in a room we can't reach
+    bot.hunt_secret((10, 24), set())
+    assert bot.target is not None and bot.target[1] >= 27, bot.note
+    assert "toward what we saw at (10, 60)" in bot.note

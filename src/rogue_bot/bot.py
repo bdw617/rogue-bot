@@ -579,18 +579,31 @@ class Bot:
 
     def hunt_secret(self, pos: Pos, avoid: set[Pos]) -> None:
         m = self.map
-        best = None
+        spots, reachable = [], set()
         for p, d, dist_ in m.bfs(pos, avoid):
+            reachable.add(p)
             score = m.search_score(p)
-            # Within a round and kind of spot, the nearest one wins: walking costs food too.
-            key = score and (score[0], score[1], dist_, score[2])
-            if key is not None and (best is None or key < best[0]):
-                best = (key, p, d)
-        if best is None or best[1] == pos:
+            if score is not None:
+                spots.append((score, dist_, p, d))
+        if not spots:
             self.note = f"search here ({m.searches[pos]})"
             return self.search(pos, 5 if self.calm > 5 else 1)
-        self.note = f"go search at {best[1]}"
-        return self.move(pos, best[1], best[2])
+        # Things we've seen but can't reach (a monster in an unvisited room, stairs, items,
+        # floor) show where the hidden way in leads: search the spots nearest them first.
+        hints = m.unreached(reachable)
+
+        def toward_hint(p: Pos) -> int:
+            return min(dist(p, h) for h in hints) if hints else 0
+
+        # Same round of searching first; then nearest the hints; then dead ends before walls;
+        # then nearest to us, since walking costs food too.
+        score, _, best, d = min(spots, key=lambda s: (s[0][0], toward_hint(s[2]), s[0][1], s[1], s[0][2]))
+        hint = f", toward what we saw at {min(hints, key=lambda h: dist(best, h))}" if hints else ""
+        if best == pos:
+            self.note = f"search here ({m.searches[pos]}){hint}"
+            return self.search(pos, 5 if self.calm > 5 else 1)
+        self.note = f"go search at {best}{hint}"
+        return self.move(pos, best, d)
 
     def shoot(self, pos: Pos, monsters: list[Pos], chars: dict[Pos, str], st: Status) -> bool:
         arrows = self.find(lambda i: i.has("arrow"))

@@ -77,6 +77,7 @@ class LevelMap:
         self.blocked: set[tuple[Pos, Pos]] = set()
         self.searches: Counter[Pos] = Counter()
         self.wall_searches: Counter[Pos] = Counter()  # searches that covered each wall square
+        self.seen_monsters: set[Pos] = set()  # every square a monster has been seen on
         self.version = 0                    # bumped whenever remembered terrain changes
         self._room_cache: dict[Pos, bool] = {}
         self._room_cache_version = -1
@@ -118,6 +119,7 @@ class LevelMap:
                         self.version += 1
                 elif ch.isupper():
                     monsters.append((r, c))
+                    self.seen_monsters.add((r, c))
                     if self.terrain[r][c] == " ":
                         self.terrain[r][c] = "."
                         self.version += 1
@@ -313,6 +315,13 @@ class LevelMap:
         # rooms can be. Small pockets between known rooms come after.
         kind = 1 if max(self.depth_behind(w) for w in walls) >= 5 else 2
         return (sweep, kind, -fresh)
+
+    def unreached(self, reachable: set[Pos]) -> set[Pos]:
+        """Squares we know are open (seen floor, stairs, items, monster sightings) but can't
+        walk to: evidence of where a hidden way in leads."""
+        known_open = {(r, c) for r in range(MAP_TOP, MAP_BOTTOM + 1) for c in range(COLS)
+                      if self.terrain[r][c] in ".%"}
+        return (known_open | set(self.items) | self.seen_monsters) - reachable
 
     def depth_behind(self, w: Pos) -> int:
         """How many unexplored squares lie straight out from this wall square (up to 8)."""
