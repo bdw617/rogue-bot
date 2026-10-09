@@ -11,14 +11,15 @@ import time
 from pathlib import Path
 
 import torch
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO as PPO
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from torch import nn
 
-from .env import ACTION_NAMES, ACTIONS, RogueEnv
+from .env import ACTION_NAMES, RogueEnv
 from .knowledge import DEFAULT_PATH as BOOK_PATH
 
 RL_DIR = BOOK_PATH.parent / "rl"
@@ -51,7 +52,9 @@ class ScreenNet(BaseFeaturesExtractor):
             full_out = self.full(torch.zeros(1, 17, rows, cols)).shape[1]
             near_out = self.near(torch.zeros(1, 16, lrows, lcols)).shape[1]
         self.status = nn.Sequential(nn.Linear(space["status"].shape[0], 32), nn.ReLU())
-        self.head = nn.Sequential(nn.Linear(full_out + near_out + 32, 512), nn.ReLU(),
+        slots, per_slot = space["pack"].shape
+        self.pack = nn.Sequential(nn.Flatten(), nn.Linear(slots * per_slot, 128), nn.ReLU())
+        self.head = nn.Sequential(nn.Linear(full_out + near_out + 32 + 128, 512), nn.ReLU(),
                                   nn.Linear(512, features_dim), nn.ReLU())
 
     def chars(self, grid):
@@ -61,7 +64,7 @@ class ScreenNet(BaseFeaturesExtractor):
         visits = (obs["visits"].float() / 10).unsqueeze(1)
         full = self.full(torch.cat([self.chars(obs["screen"]), visits], dim=1))
         near = self.near(self.chars(obs["local"]))
-        return self.head(torch.cat([full, near, self.status(obs["status"])], dim=1))
+        return self.head(torch.cat([full, near, self.status(obs["status"]), self.pack(obs["pack"])], dim=1))
 
 
 class EpisodeLog(BaseCallback):
@@ -93,8 +96,12 @@ class EpisodeLog(BaseCallback):
 
 
 def make_env(max_steps: int, read_wait: float):
-    return lambda: Monitor(RogueEnv(max_steps=max_steps, read_wait=read_wait),
-                           info_keywords=("depth", "gold", "xlevel", "steps", "cause"))
+    def build():
+        env = Monitor(RogueEnv(max_steps=max_steps, read_wait=read_wait),
+                      info_keywords=("depth", "gold", "xlevel", "steps", "cause"))
+        # Impossible choices (quaffing a sword, an empty pack slot) are masked out.
+        return ActionMasker(env, lambda e: e.unwrapped.action_masks())
+    return build
 
 
 def train() -> None:
@@ -165,7 +172,7 @@ class Watcher:
             self.result.depth = max(self.result.depth, st.depth)
             self.result.gold, self.result.xlevel = st.gold, st.xlevel
         self.result.steps = steps
-        self.note = f"RL agent: {ACTION_NAMES[action]} ({ACTIONS[action]}), reward {reward:+.2f}"
+        self.note = f"RL agent: {ACTION_NAMES[action]}, reward {reward:+.2f}"
 
 
 def play_rl_game(render=None, delay: float = 0.0, max_steps: int = 30000,
@@ -179,7 +186,7 @@ def play_rl_game(render=None, delay: float = 0.0, max_steps: int = 30000,
     done, steps = False, 0
     try:
         while not done:
-            action, _ = model.predict(obs, deterministic=False)
+            action, _ = model.predict(obs, deterministic=False, action_masks=env.action_masks())
             obs, r, terminated, truncated, info = env.step(action)
             steps += 1
             done = terminated or truncated
