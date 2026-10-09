@@ -522,7 +522,7 @@ class Bot:
 
     def search(self, pos: Pos, n: int = 1) -> None:
         # A count prefix repeats the search; rogue interrupts it if a monster shows up.
-        self.map.searches[pos] += n
+        self.map.record_search(pos, n)
         self.send(f"{n}s" if n > 1 else "s")
 
     def descend(self, pos: Pos) -> None:

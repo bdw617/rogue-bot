@@ -118,3 +118,31 @@ def test_flee_step_runs_toward_open_space_not_dead_end():
     # Chaser in the corridor to our east: run back into the room, away from it.
     m.update(lines, (7, 7))
     assert m.flee_step((7, 7), [(7, 9)], {(7, 9)}) in ("h", "y", "b")
+
+
+def test_search_sweeps_every_wall_of_a_doorless_room():
+    # The room the live bot got stuck in: top-right of the map, no visible doors.
+    lines = screen({
+        1: " " * 55 + "----------------",
+        2: " " * 55 + "|..............|",
+        3: " " * 55 + "|..............|",
+        4: " " * 55 + "|@.............|",
+        5: " " * 55 + "|..............|",
+        6: " " * 55 + "----------------",
+    })
+    m = LevelMap(wall_tier=15)
+    m.update(lines, (4, 56))
+    doors_possible = {(r, c) for r in range(1, 23) for c in range(80) if m.hides_door((r, c))}
+    # Left wall, right wall and bottom wall can hide doors; the top wall is the map edge.
+    assert (6, 62) in doors_possible and (4, 55) in doors_possible and (4, 70) in doors_possible
+    assert not any(r == 1 for r, _ in doors_possible)
+    spots = [(r, c) for r in range(2, 6) for c in range(56, 70)]
+    picked = []
+    for _ in range(40):
+        best = min((m.search_score(p), p) for p in spots if m.search_score(p) is not None)[1]
+        picked.append(best)
+        m.record_search(best, 5)
+    # Within 40 picks every possible door square has had a full round of searching.
+    assert all(m.wall_searches[w] >= 15 for w in doors_possible)
+    # It moved along the bottom wall instead of circling the corners.
+    assert {(5, 59), (5, 62), (5, 65)} <= set(picked)

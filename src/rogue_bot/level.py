@@ -76,6 +76,7 @@ class LevelMap:
         self.pickup_tries: Counter[Pos] = Counter()  # times we stood on an item there
         self.blocked: set[tuple[Pos, Pos]] = set()
         self.searches: Counter[Pos] = Counter()
+        self.wall_searches: Counter[Pos] = Counter()  # searches that covered each wall square
 
     def t(self, p: Pos) -> str:
         return self.terrain[p[0]][p[1]]
@@ -239,15 +240,36 @@ class LevelMap:
         if (dead_end or blind_door) and p in self.visited:
             # These almost always hide a corridor, and search only reaches 1 square.
             return (self.searches[p] // self.dead_end_tier, 0, 0)
-        if t != "." or not any(self.t(n) in "-|" for n in neighbors8(p)):
+        if t != ".":
             return None
-        # A spot along a room wall, worth it only where the wall faces a lot of unexplored map.
-        unknown = sum(self.terrain[r][c] == " "
-                      for r in range(max(MAP_TOP, p[0] - 3), min(MAP_BOTTOM, p[0] + 3) + 1)
-                      for c in range(max(0, p[1] - 3), min(COLS, p[1] + 4)))
-        if unknown < 15:
+        # A spot beside room walls that could hide a door: prefer the one that covers the most
+        # wall squares not yet searched enough, so the bot sweeps the walls instead of circling.
+        walls = [w for w in neighbors8(p) if self.hides_door(w)]
+        if not walls:
             return None
-        return (self.searches[p] // self.wall_tier, 1, -(unknown // 6))
+        sweep = min(self.wall_searches[w] for w in walls) // self.wall_tier
+        fresh = sum(self.wall_searches[w] // self.wall_tier == sweep for w in walls)
+        return (sweep, 1, -fresh)
+
+    def hides_door(self, w: Pos) -> bool:
+        """A wall square (not a corner) with unexplored map right behind it."""
+        t = self.t(w)
+        if t not in "-|":
+            return False
+        if t == "-":
+            ends, sides = ((w[0], w[1] - 1), (w[0], w[1] + 1)), ((w[0] - 1, w[1]), (w[0] + 1, w[1]))
+        else:
+            ends, sides = ((w[0] - 1, w[1]), (w[0] + 1, w[1])), ((w[0], w[1] - 1), (w[0], w[1] + 1))
+        if not all(self.t(e) in "-|+" for e in ends if MAP_TOP <= e[0] <= MAP_BOTTOM):
+            return False  # a corner: rogue never puts doors there
+        return any(MAP_TOP <= r <= MAP_BOTTOM and 0 <= c < COLS and self.terrain[r][c] == " "
+                   for r, c in sides)
+
+    def record_search(self, p: Pos, n: int) -> None:
+        self.searches[p] += n
+        for w in neighbors8(p):
+            if self.t(w) in "-|":
+                self.wall_searches[w] += n
 
     def rooms_seen(self) -> int:
         """Rooms whose floor we've seen: groups of 4+ connected floor squares."""
