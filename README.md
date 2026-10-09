@@ -2,6 +2,32 @@
 
 A bot that plays BSD rogue (`/usr/games/rogue`, from `bsdgames-nonfree`) and shows the game live in your terminal.
 
+## Install
+
+1. Install rogue. On Debian or Ubuntu it's in the `bsdgames-nonfree` package:
+
+   ```bash
+   sudo apt install bsdgames-nonfree
+   ```
+
+   That puts the game at `/usr/games/rogue`. Run `/usr/games/rogue` once to check it starts, then press `Q` and `y` to quit.
+
+2. Install [uv](https://docs.astral.sh/uv/). It fetches Python 3.14 and the project's dependencies for you:
+
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. Get the bot and run it:
+
+   ```bash
+   git clone git@github.com:bdw617/rogue-bot.git
+   cd rogue-bot
+   uv run rogue-bot
+   ```
+
+The bot looks for `rogue` on your `PATH`, then falls back to `/usr/games/rogue`. If yours is somewhere else, pass `--rogue /path/to/rogue`. It's written for this BSD rogue (the "rogue-clone" in bsdgames); other versions of rogue draw the screen differently.
+
 ## Watch it play
 
 ```bash
