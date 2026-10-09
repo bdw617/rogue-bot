@@ -45,6 +45,7 @@ class Result:
     xlevel: int = 0
     steps: int = 0
     cause: str = ""
+    seconds: float = 0.0
 
 
 @dataclass

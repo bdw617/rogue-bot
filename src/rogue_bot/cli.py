@@ -39,14 +39,19 @@ ROGUE = shutil.which("rogue") or "/usr/games/rogue"
 
 
 def play_game(book: MonsterBook, params: Params, rogue: str = ROGUE, max_steps: int = 30000,
-              render=None, delay: float = 0.0, trace=None) -> Result:
+              render=None, delay: float = 0.0, trace=None,
+              read_wait: float = 0.1, read_idle: float = 0.015) -> Result:
     """Play one full game of rogue and return how it went."""
     wait_for_fresh_seed()
-    term = Terminal([rogue], env={"ROGUEOPTS": "noskull,fruit=mango,name=roguebot"})
+    started = time.time()
+    term = Terminal([rogue], env={"ROGUEOPTS": "noskull,fruit=mango,name=roguebot"},
+                    first_wait=read_wait, idle=read_idle)
     bot = Bot(term, render=render, delay=delay, max_steps=max_steps, trace=trace,
               book=book, params=params)
     try:
-        return bot.run()
+        result = bot.run()
+        result.seconds = round(time.time() - started, 1)
+        return result
     finally:
         book.save()
         if render:
@@ -65,6 +70,11 @@ def main() -> None:
     ap.add_argument("--rogue", default=ROGUE)
     ap.add_argument("--log", default="results.jsonl")
     ap.add_argument("--trace", help="append one line per bot decision to this file")
+    ap.add_argument("--read-wait-ms", type=float, default=100,
+                    help="max wait for rogue to answer a key (default %(default)s)")
+    ap.add_argument("--read-idle-ms", type=float, default=15,
+                    help="quiet gap that means rogue has finished drawing (default %(default)s)")
+    ap.add_argument("--label", default="", help="tag stored with each game in the log")
     ap.add_argument("--book", type=Path, default=DEFAULT_PATH,
                     help="monster book the bot learns from and adds to (default: %(default)s)")
     ap.add_argument("--params", type=Path, default=None,
@@ -105,10 +115,13 @@ def main() -> None:
     try:
         for game in itertools.count(1) if args.games == 0 else range(1, args.games + 1):
             r = play_game(book, params, args.rogue, args.max_steps, render=render,
-                          delay=args.delay if views else 0, trace=trace)
+                          delay=args.delay if views else 0, trace=trace,
+                          read_wait=args.read_wait_ms / 1000, read_idle=args.read_idle_ms / 1000)
             results.append(r)
             with open(args.log, "a") as f:
-                f.write(json.dumps({"time": time.time(), **r.__dict__}) + "\n")
+                f.write(json.dumps({"time": time.time(), "label": args.label,
+                                    "read_wait_ms": args.read_wait_ms,
+                                    "read_idle_ms": args.read_idle_ms, **r.__dict__}) + "\n")
             if args.headless and not args.web:
                 print(f"game {game}: depth {r.depth} gold {r.gold} xl {r.xlevel} "
                       f"steps {r.steps} :: {r.cause}", flush=True)

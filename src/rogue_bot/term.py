@@ -65,7 +65,11 @@ def reap_orphans() -> int:
 
 
 class Terminal:
-    def __init__(self, argv: list[str], env: dict[str, str] | None = None):
+    def __init__(self, argv: list[str], env: dict[str, str] | None = None,
+                 first_wait: float = 0.1, idle: float = 0.015):
+        # How long to wait for rogue to start answering, and how long a quiet gap means
+        # it has finished drawing. Shorter is faster but risks reading a half-drawn screen.
+        self.first_wait, self.idle = first_wait, idle
         self.screen = pyte.Screen(COLS, ROWS)
         self.stream = pyte.ByteStream(self.screen)
         workdir = state_dir()
@@ -89,8 +93,10 @@ class Terminal:
             except OSError:
                 self.alive = False
 
-    def pump(self, first_wait: float = 0.1, idle: float = 0.015) -> bool:
+    def pump(self, first_wait: float | None = None, idle: float | None = None) -> bool:
         """Read output until it goes quiet. Returns True if anything arrived."""
+        first_wait = self.first_wait if first_wait is None else first_wait
+        idle = self.idle if idle is None else idle
         got = False
         while self.alive:
             r, _, _ = select.select([self.fd], [], [], idle if got else first_wait)
