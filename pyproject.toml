@@ -1,0 +1,24 @@
+[project]
+name = "rogue-bot"
+version = "0.1.0"
+description = "A bot that plays BSD rogue in your terminal"
+readme = "README.md"
+authors = [
+    { name = "bdw", email = "barry.waldbaum@flexcompute.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "pyte>=0.8.2",
+]
+
+[project.scripts]
+rogue-bot = "rogue_bot:main"
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
