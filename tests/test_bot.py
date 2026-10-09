@@ -234,3 +234,34 @@ def test_unreachable_stairs_mean_explore_the_doors_not_search_walls():
     assert bot.map.rooms_seen() >= 2 and bot.map.stairs() == (4, 8)
     bot.act(st, pos, [], 0)
     assert bot.note.startswith("find a way to the stairs"), bot.note
+
+
+def test_bot_sticks_with_its_exploration_target():
+    from rogue_bot.level import parse_status
+
+    class Corridor:
+        alive = True
+
+        def __init__(self):
+            rows = [" " * 80] * 24
+            rows[13] = "          ##########@#####".ljust(80)
+            rows[23] = "Level: 4  Gold: 0      Hp: 40(40)   Str: 16(16) Arm: 5  Exp: 4/60".ljust(80)
+            self.rows = [r.ljust(80) for r in rows]
+
+        def lines(self):
+            return self.rows
+
+        def send(self, keys):
+            pass
+
+        def pump(self, *a, **k):
+            return True
+
+    term = Corridor()
+    bot = Bot(term)
+    pos = (13, 20)
+    bot.map.update(term.rows, pos)
+    st = parse_status(term.rows[23])
+    bot.goal = ("explore", (13, 10))            # the far end, chosen earlier
+    bot.act(st, pos, [], 0)
+    assert bot.note == "explore -> (13, 10)"    # not the nearer east end

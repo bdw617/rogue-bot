@@ -123,6 +123,7 @@ class Bot:
         self.repeats = 0                     # steps the bot has made no visible progress
         self.last_sig = None
         self.items_off_until = 0             # watchdog: skip item actions until this step
+        self.goal: tuple[str, Pos] | None = None  # explore/loot target we're committed to
         self.kiting = 0                      # turns spent running from the current fight
 
     # ---- terminal plumbing -------------------------------------------------
@@ -275,6 +276,7 @@ class Bot:
                 self.trail.clear()
                 self.prev_monsters, self.still = {}, {}
                 self.book.fight_swings.clear()
+                self.goal = None
             if not self.trail or self.trail[-1] != pos:
                 self.trail.append(pos)
             self.target = None
@@ -492,11 +494,20 @@ class Bot:
             ("explore", m.is_frontier),
         ]
         for name, pred in goals:
+            # Stick with the target we picked: re-choosing "nearest" every step can flip back
+            # and forth forever when a monster drifts in and out of view.
+            if self.goal and self.goal[0] == name and self.goal[1] != pos and pred(self.goal[1]):
+                path = m.path(pos, self.goal[1], avoid) or m.path(pos, self.goal[1], set(monsters))
+                if path:
+                    self.note = f"{'find a way to the stairs' if rush else name} -> {self.goal[1]}"
+                    return self.move(pos, path[0])
             hit = m.nearest(pos, pred, avoid) or m.nearest(pos, pred, set(monsters))
             if hit:
+                self.goal = (name, hit[0])
                 note = "find a way to the stairs" if rush else name
                 self.note = f"{note} -> {hit[0]}"
                 return self.move(pos, hit[0], hit[1])
+        self.goal = None
 
         if stairs:
             if pos == stairs:
