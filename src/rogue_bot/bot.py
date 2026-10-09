@@ -233,12 +233,15 @@ class Bot:
         self.settle()
         self.term.send(cmd)
         self.term.pump()
-        for key in ([extra] if cmd in "zt" else []) + [item.letter]:
-            if not self.lines()[0].rstrip().endswith("?"):
-                self.send("\x1b")
-                return
-            self.term.send(key)
+        if cmd in "zt":
+            # Throw and zap ask for a direction without printing any prompt.
+            self.term.send(extra)
             self.term.pump()
+        if not self.lines()[0].rstrip().endswith("?"):
+            self.send("\x1b")
+            return
+        self.term.send(item.letter)
+        self.term.pump()
         if "identify" in self.lines()[0]:
             target = self.find(lambda i: i.has("potion", "scroll", "wand", "staff", "ring")
                                and i.unknown and i.letter != item.letter)

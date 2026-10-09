@@ -161,3 +161,19 @@ def test_escapes_the_options_screen():
     term = Prompting("", top=OPTIONS_SCREEN + ": False")
     Bot(term).settle()
     assert term.sent and term.sent[0] == "\x1b"
+
+
+
+class SilentDirection(Prompting):
+    """Like rogue's throw: no prompt for the direction, then "throw what?"."""
+
+    def send(self, keys):
+        self.sent.append(keys)
+        self.top = "throw what?" if len(self.sent) == 2 else ""
+
+
+def test_throw_sends_direction_without_waiting_for_a_prompt():
+    from rogue_bot.bot import Item
+    term = SilentDirection("")
+    Bot(term).use("t", Item("e", "31 +0,+0 arrows"), extra="l")
+    assert term.sent[:3] == ["t", "l", "e"]
