@@ -17,11 +17,11 @@ from pathlib import Path
 
 import optuna
 
-from .cli import ROGUE, play_game
+from .cli import ROGUE, exit_cleanly_on_signals, play_game
 from .knowledge import DEFAULT_PATH as BOOK_PATH
 from .knowledge import MonsterBook
 from .params import Params, default_path
-from .term import state_dir
+from .term import reap_orphans, state_dir
 
 
 def _play(params: dict, book: str, rogue: str, max_steps: int) -> dict:
@@ -90,6 +90,8 @@ def main() -> None:
                     help="where a confirmed winner is saved; rogue-bot reads it from here")
     ap.add_argument("--rogue", default=ROGUE)
     args = ap.parse_args()
+    exit_cleanly_on_signals()
+    reap_orphans()
 
     # Every game starts from the same frozen monster book, so trials compare fairly.
     book = state_dir() / "tune-book.json"

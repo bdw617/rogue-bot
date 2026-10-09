@@ -22,6 +22,48 @@ def state_dir() -> Path:
     return base
 
 
+def _children_dir() -> Path:
+    """One file per rogue game we started, named by its PID and holding the bot's PID."""
+    d = state_dir() / "children"
+    d.mkdir(exist_ok=True, mode=0o700)
+    return d
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def reap_orphans() -> int:
+    """Kill rogue games left behind by a bot that died without closing them.
+
+    Rogue is setgid, so the kernel's parent-death signal can't do this for us, and an
+    orphaned rogue spins at full CPU. Returns how many were killed.
+    """
+    killed = 0
+    for f in _children_dir().iterdir():
+        try:
+            child, owner = int(f.name), int(f.read_text() or 0)
+        except ValueError:
+            f.unlink(missing_ok=True)
+            continue
+        if owner and _alive(owner):
+            continue
+        try:
+            if b"rogue" in Path(f"/proc/{child}/cmdline").read_bytes():
+                os.kill(child, signal.SIGKILL)
+                killed += 1
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass
+        f.unlink(missing_ok=True)
+    return killed
+
+
 class Terminal:
     def __init__(self, argv: list[str], env: dict[str, str] | None = None):
         self.screen = pyte.Screen(COLS, ROWS)
@@ -37,6 +79,8 @@ class Terminal:
             os.execvpe(argv[0], argv, full_env)
         self.pid, self.fd = pid, fd
         self.alive = True
+        self.record = _children_dir() / str(pid)
+        self.record.write_text(str(os.getpid()))
 
     def send(self, keys: str) -> None:
         if self.alive:
@@ -85,3 +129,4 @@ class Terminal:
             except ChildProcessError:
                 break
             time.sleep(0.01)
+        self.record.unlink(missing_ok=True)

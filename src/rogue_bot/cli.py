@@ -6,15 +6,22 @@ import itertools
 import json
 from pathlib import Path
 import shutil
+import signal
 import sys
 import time
 
 from .bot import Bot, Result
 from .knowledge import DEFAULT_PATH, MonsterBook
 from .params import Params, default_path
-from .term import Terminal, state_dir
+from .term import Terminal, reap_orphans, state_dir
 from .view import TerminalView
 from .web import WebView
+
+def exit_cleanly_on_signals() -> None:
+    """Turn hangup/terminate into a normal exit so open games get closed, not orphaned."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(1))
+
 
 def wait_for_fresh_seed() -> None:
     """Rogue seeds from the clock: keep game starts across parallel runs >1s apart."""
@@ -63,6 +70,8 @@ def main() -> None:
     ap.add_argument("--params", type=Path, default=None,
                     help="judgement numbers to play with (default: the tuner's saved best, if any)")
     args = ap.parse_args()
+    exit_cleanly_on_signals()
+    reap_orphans()
 
     params_path = args.params or default_path()
     params = Params.load(params_path) if params_path.exists() else Params()
