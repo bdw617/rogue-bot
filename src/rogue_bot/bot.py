@@ -89,6 +89,10 @@ class Bot:
         self.tried_armor: set[str] = set()
         self.bad_weapons: set[str] = set()
         self.tried_wands: dict[str, int] = {}
+        self.weapon_stuck = False            # a cursed weapon in hand blocks swapping
+        self.repeats = 0                     # steps the bot has made no visible progress
+        self.last_sig = None
+        self.items_off_until = 0             # watchdog: skip item actions until this step
         self.kiting = 0                      # turns spent running from the current fight
         self.unkitable: set[str] = set()     # monsters that hit us while we ran (too fast)
 
@@ -140,6 +144,11 @@ class Bot:
         if PICKUP_RE.search(msg):
             self.inv_dirty = True
         low = msg.lower()
+        if "cursed" in low and "can't" in low:
+            self.weapon_stuck = True
+        if "watching over you" in low:  # remove curse
+            self.weapon_stuck = False
+            self.bad_weapons.clear()
         for effect, (start, end) in EFFECTS.items():
             if start in low:
                 self.effects.add(effect)
@@ -236,6 +245,7 @@ class Bot:
             if self.inv_dirty:
                 self.refresh_inventory()
             self.act(st, pos, monsters, hp_drop)
+            self.watchdog(pos, steps)
             if self.trace and self.level_steps == 800:
                 self.dump_map(pos)
             if self.trace:
@@ -257,6 +267,21 @@ class Bot:
             self.trace.write(f"# end: {self.result.cause}\n")
         self.show()
         return self.result
+
+    def watchdog(self, pos: Pos, steps: int) -> None:
+        """Break loops where an action silently fails and no game time passes."""
+        sig = (pos, self.note, tuple(self.lines()))
+        waiting = self.note.startswith(("rest", "blind", "search", "levitating", "wait"))
+        self.repeats = self.repeats + 1 if sig == self.last_sig and not waiting else 0
+        self.last_sig = sig
+        if self.repeats >= 30:
+            self.repeats = 0
+            self.items_off_until = steps + 150
+            self.note = f"watchdog: '{self.note}' was going nowhere; items off for a while"
+            self.send("s")
+
+    def items_ok(self) -> bool:
+        return self.result.steps >= self.items_off_until
 
     def dump_map(self, pos: Pos) -> None:
         """Write the remembered map to the trace: S/s = searched a lot/a little, v = visited."""
@@ -349,14 +374,14 @@ class Bot:
                                                   self.book.swings_to_kill(chars[p], st.depth)))
             bow = self.find(lambda i: i.has("bow") and "in hand" in i.desc)
             melee = self.best_melee()
-            if bow and melee:
+            if bow and melee and not self.weapon_stuck and self.items_ok():
                 self.note = f"switch to {melee.desc}"
-                return self.use("w", melee)
+                return self.wield(melee)
             self.fighting = NAMES.get(chars[target])
             self.note = f"fight {chars[target]} (hp {st.hp}/{st.maxhp}, worst hit {worst})"
             return self.move(pos, target)
 
-        if self.shoot(pos, monsters, chars, st):
+        if self.items_ok() and self.shoot(pos, monsters, chars, st):
             return
 
         coming = [p for p in self.approaching if dist(p, pos) <= 5 and p not in scary]
@@ -380,7 +405,7 @@ class Bot:
             self.note = f"rest (hp {st.hp}/{st.maxhp})"
             return self.search(pos, 10 if self.calm > 5 else 1)
 
-        if not monsters and self.safe_upgrade(st):
+        if not monsters and self.items_ok() and self.safe_upgrade(st):
             return
 
         # Don't wake sleepers we'd struggle to beat, or step next to freezers.
@@ -506,13 +531,15 @@ class Bot:
             if not (arrows and bow):
                 continue
             if "in hand" not in bow.desc:
+                if self.weapon_stuck:
+                    continue
                 # Swapping costs a turn; not worth it for close or erratic (bat) targets.
                 others = [q for q in monsters if q != p and dist(q, pos) <= 3]
                 far_enough = 3 if self.fight_cost(chars[p], st.depth) > st.hp * 0.4 else 4
                 if chars[p] == "B" or dist(p, pos) < far_enough or others:
                     continue
                 self.note = f"wield bow for {chars[p]}"
-                self.use("w", bow)
+                self.wield(bow)
             else:
                 self.note = f"shoot {chars[p]}"
                 self.use("t", arrows, extra=d)
@@ -568,6 +595,15 @@ class Bot:
                 return True
         return False
 
+    def wield(self, item: Item) -> bool:
+        self.use("w", item)
+        now = self.find(lambda i: i.letter == item.letter)
+        if now and "in hand" in now.desc:
+            return True
+        # Rogue refuses to swap away from a cursed weapon.
+        self.weapon_stuck = True
+        return False
+
     def best_melee(self) -> Item | None:
         weapons = [(v, i) for i in self.inv for k, v in MELEE.items()
                    if k in i.desc and i.letter not in self.bad_weapons]
@@ -575,10 +611,9 @@ class Bot:
 
     def safe_upgrade(self, st: Status) -> bool:
         best = self.best_melee()
-        if best and "in hand" not in best.desc:
+        if best and "in hand" not in best.desc and not self.weapon_stuck:
             self.note = f"wield {best.desc}"
-            self.use("w", best)
-            if "in hand" not in (self.find(lambda i: i.letter == best.letter) or best).desc:
+            if not self.wield(best):
                 self.bad_weapons.add(best.letter)
             return True
         if st.hp >= st.maxhp * 0.8 and not self.effects:
