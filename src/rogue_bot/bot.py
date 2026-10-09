@@ -474,25 +474,36 @@ class Bot:
             if hit and len(m.path(pos, hit[0], avoid)) <= P.loot_detour:
                 self.note = f"grab item on the way -> {hit[0]}"
                 return self.move(pos, hit[0], hit[1])
-        goals = [] if rush else [
+        to_stairs = None
+        if stairs and pos != stairs:
+            to_stairs = (m.nearest(pos, lambda p: p == stairs, avoid)
+                         or m.nearest(pos, lambda p: p == stairs, set(monsters))
+                         or m.nearest(pos, lambda p: p == stairs, set(monsters), allow_traps=True))
+        if rush and (pos == stairs or to_stairs):
+            if pos == stairs:
+                return self.descend(pos)
+            self.note = "to stairs"
+            return self.move(pos, to_stairs[0], to_stairs[1])
+
+        # Explore (doors, corridors, unlit rooms) before anything else; this is also how we
+        # find a route to stairs we can see but can't reach yet.
+        goals = [("explore", m.is_frontier)] if rush else [
             ("loot", lambda p: p in m.items),
             ("explore", m.is_frontier),
         ]
         for name, pred in goals:
             hit = m.nearest(pos, pred, avoid) or m.nearest(pos, pred, set(monsters))
             if hit:
-                self.note = f"{name} -> {hit[0]}"
+                note = "find a way to the stairs" if rush else name
+                self.note = f"{note} -> {hit[0]}"
                 return self.move(pos, hit[0], hit[1])
 
         if stairs:
             if pos == stairs:
                 return self.descend(pos)
-            hit = (m.nearest(pos, lambda p: p == stairs, avoid)
-                   or m.nearest(pos, lambda p: p == stairs, set(monsters))
-                   or m.nearest(pos, lambda p: p == stairs, set(monsters), allow_traps=True))
-            if hit:
+            if to_stairs:
                 self.note = "to stairs"
-                return self.move(pos, hit[0], hit[1])
+                return self.move(pos, to_stairs[0], to_stairs[1])
 
         teleport = self.find(lambda i: i.has("scroll") and i.has("teleport"))
         if teleport and not food and self.level_steps > P.level_budget:

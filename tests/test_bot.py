@@ -196,3 +196,41 @@ def test_hurt_bot_backs_off_from_an_approaching_monster():
     healthy = parse_status("Level: 2  Gold: 0      Hp: 19(20)   Str: 16(16) Arm: 4  Exp: 2/20")
     bot.kiting = 0
     assert not bot.kite(healthy, (6, 7), [(6, 11)], [], {(6, 11): "S"}, 0)
+
+
+def test_unreachable_stairs_mean_explore_the_doors_not_search_walls():
+    from rogue_bot.level import parse_status
+
+    class Map:
+        alive = True
+
+        def __init__(self):
+            rows = [" " * 80] * 24
+            rows[3] = "   ----------- ".ljust(80)
+            rows[4] = "   |....%....| ".ljust(80)
+            rows[5] = "   ----------- ".ljust(80)
+            rows[17] = " " * 50 + "---------"
+            rows[18] = " " * 50 + "+...@...|"
+            rows[19] = " " * 50 + "---------"
+            rows[23] = "Level: 9  Gold: 0      Hp: 50(50)   Str: 16(16) Arm: 5  Exp: 7/300"
+            self.rows = [r.ljust(80) for r in rows]
+            self.sent = []
+
+        def lines(self):
+            return self.rows
+
+        def send(self, keys):
+            self.sent.append(keys)
+
+        def pump(self, *a, **k):
+            return True
+
+    term = Map()
+    bot = Bot(term)
+    st = parse_status(term.rows[23])
+    pos = (18, 54)
+    bot.map.update(term.rows, pos)
+    bot.map.visited |= {(18, c) for c in range(51, 58)}
+    assert bot.map.rooms_seen() >= 2 and bot.map.stairs() == (4, 8)
+    bot.act(st, pos, [], 0)
+    assert bot.note.startswith("find a way to the stairs"), bot.note
