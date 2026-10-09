@@ -204,3 +204,25 @@ def test_stairs_in_an_unlit_room_are_reachable():
     assert m.nearest((7, 18), lambda p: p == stairs) is not None
     # Unknown rock outside rooms is still off limits.
     assert not m.can_step((7, 17), (8, 17))
+
+
+def test_probe_past_a_corridor_dead_end_before_searching():
+    lines = screen({
+        11: "------",
+        12: "|....+#####",
+        13: "------    #",
+        14: "          #",
+    })
+    m = LevelMap()
+    m.update(lines, (12, 2))
+    m.visited |= {(12, c) for c in range(5, 11)} | {(13, 10), (14, 10)}
+    end = (14, 10)
+    assert m.dead_end(end) and not m.dead_end((12, 7))
+    assert m.can_step(end, (15, 10)) and m.can_step(end, (14, 11))
+    assert not m.can_step(end, (15, 11))            # never diagonally into the dark
+    assert not m.can_step((12, 7), (11, 7))         # not from the middle of a corridor
+    target, _ = m.nearest((12, 2), m.is_frontier)
+    assert target in {(15, 10), (14, 9), (14, 11)}
+    for t in [(15, 10), (14, 9), (14, 11)]:
+        m.blocked.add((end, t))                     # all probes failed
+    assert m.nearest((12, 2), m.is_frontier) is None

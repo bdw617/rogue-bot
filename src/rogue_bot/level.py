@@ -146,6 +146,10 @@ class LevelMap:
             # Blank squares inside a room's walls are an unlit room's floor.
             if self.t(a) == "+":
                 return r1 == r2 or c1 == c2
+            # At a corridor's end, try walking on into the dark, as a player would: a
+            # step into rock costs no game time, and a failed one is marked blocked.
+            if (r1 == r2 or c1 == c2) and self.t(a) in "#." and self.dead_end(a):
+                return True
             if not self.inside_room(b):
                 return False
             t = "."
@@ -158,6 +162,14 @@ class LevelMap:
                 if self.t(corner) == " " and not self.inside_room(corner):
                     return False
         return True
+
+    def unblock(self) -> None:
+        """Forget failed moves, except probes into the dark: those squares are solid rock."""
+        self.blocked = {(a, b) for a, b in self.blocked if self.t(b) == " "}
+
+    def dead_end(self, p: Pos) -> bool:
+        """A visited corridor square with at most one way on."""
+        return p in self.visited and sum(self.t(step(p, d)) in WALKABLE for d in "hjkl") <= 1
 
     def inside_room(self, p: Pos) -> bool:
         """Is this blank square enclosed by one room's walls on all four sides?"""

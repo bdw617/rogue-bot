@@ -68,3 +68,38 @@ def test_best_melee_keeps_the_weapon_in_hand_on_ties():
     bot = Bot(FakeTerm())
     bot.inv = [Item("c", "a mace in hand"), Item("g", "a mace")]
     assert bot.best_melee().letter == "c"
+
+
+class Corridor:
+    """A corridor running east-west with an invisible monster one square east."""
+
+    alive = True
+
+    def __init__(self):
+        self.top = ""
+
+    def lines(self):
+        rows = [self.top.ljust(80)] + [" " * 80] * 23
+        rows[5] = "    ###@###".ljust(80)
+        rows[23] = "Level: 4  Gold: 0      Hp: 20(30)   Str: 16(16) Arm: 5  Exp: 3/40".ljust(80)
+        return rows
+
+    def send(self, keys):
+        # Moving east hits the invisible monster; any other way would move us (not modelled).
+        self.top = "you miss" if keys == "l" else ""
+
+    def pump(self, *a, **k):
+        return True
+
+
+def test_finds_and_keeps_hitting_an_invisible_attacker():
+    bot = Bot(Corridor())
+    bot.map.update(bot.lines(), (5, 7))
+    bot.map.visited |= {(5, c) for c in range(4, 11)}
+    bot.unseen_dir = None
+    bot.fight_unseen((5, 7))         # tries west first: no hit (screen says nothing)
+    bot.fight_unseen((5, 7))         # then east: "you miss", and we didn't move
+    assert bot.unseen_dir == "l"
+    assert ((5, 7), (5, 8)) not in bot.map.blocked
+    bot.fight_unseen((5, 7))
+    assert bot.note == "swing l at unseen attacker"

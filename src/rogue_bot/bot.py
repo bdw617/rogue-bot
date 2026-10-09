@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .knowledge import NAMES, MonsterBook
 from .params import Params
-from .level import (LevelMap, Pos, Status, direction, find_player, neighbors8,
+from .level import (DIRS, LevelMap, Pos, Status, direction, find_player, neighbors8,
                     parse_status, step)
 from .term import Terminal
 
@@ -109,7 +109,9 @@ class Bot:
         self.inv_dirty = False
         self.waited = 0
         self.backed_off = 0
-        self.swing = 0
+        self.unseen_turns = 0                # keep fighting an unseen attacker this many turns
+        self.unseen_dir: str | None = None   # direction we last connected with it
+        self.unseen_tried: set[str] = set()
         self.calm = 0
         self.tried_armor: set[str] = set()
         self.bad_weapons: set[str] = set()
@@ -366,12 +368,13 @@ class Bot:
             return self.use("e", food)
 
         if hp_drop and not monsters:
-            # Blind or an invisible attacker: walking into it is an attack.
-            dirs = [n for n in neighbors8(pos) if m.can_step(pos, n)]
-            if dirs:
-                self.swing += 1
-                self.note = "swing at unseen attacker"
-                return self.move(pos, dirs[self.swing % len(dirs)])
+            self.unseen_turns = 6  # something we can't see is hitting us
+        if self.unseen_turns and not monsters:
+            self.unseen_turns -= 1
+            if st.hp <= max(4, st.maxhp * P.flee_frac) and self.emergency(pos, None):
+                return
+            return self.fight_unseen(pos)
+        self.unseen_turns, self.unseen_dir = 0, None
 
         worst = max((self.worst_hit(chars[p], st.depth) for p in adjacent), default=0)
         # One more worst-case hit could kill us.
@@ -472,12 +475,42 @@ class Bot:
                 return self.move(pos, hit[0], hit[1])
 
         if m.blocked:
-            m.blocked.clear()
+            m.unblock()
             self.note = "unstick"
             return self.search(pos)
         return self.hunt_secret(pos, avoid)
 
     # ---- actions ---------------------------------------------------------------
+
+    def fight_unseen(self, pos: Pos) -> None:
+        """Hit an invisible attacker (or anything, while blind). Walking into its square is
+        an attack: if we don't move and rogue reports a hit or miss, we've found it."""
+        m = self.map
+        if self.unseen_dir:
+            d = self.unseen_dir
+        else:
+            options = [d for d in DIRS if d not in self.unseen_tried and m.can_step(pos, step(pos, d))]
+            if not options:
+                self.unseen_tried.clear()
+                options = [d for d in DIRS if m.can_step(pos, step(pos, d))]
+            if not options:
+                self.note = "unseen attacker: nowhere to swing"
+                return self.search(pos)
+            # Only squares we could step on can hold it (in a corridor, just along it);
+            # straight lines come first in DIRS.
+            d = options[0]
+            self.unseen_tried.add(d)
+        self.note = f"swing {d} at unseen attacker"
+        before = len(self.turn_msgs)
+        self.send(d)  # not move(): a swing that hits must not be recorded as a wall
+        connected = find_player(self.lines()) == pos and any(
+            "you hit" in x or "you miss" in x or "defeated" in x for x in self.turn_msgs[before:])
+        if connected:
+            self.unseen_dir = d
+        else:
+            self.unseen_dir = None
+            if find_player(self.lines()) != pos:
+                self.unseen_tried = set()  # we moved; it's somewhere around the new spot
 
     def kite(self, st: Status, pos: Pos, monsters: list[Pos], adjacent: list[Pos],
              chars: dict[Pos, str], hp_drop: int) -> bool:
@@ -617,7 +650,7 @@ class Bot:
                 return True
         return False
 
-    def emergency(self, pos: Pos, target: Pos) -> bool:
+    def emergency(self, pos: Pos, target: Pos | None) -> bool:
         options = [
             ("q", lambda i: i.has("potion of healing", "potion of extra healing",
                                   "potions of healing", "potions of extra healing")),
@@ -632,7 +665,8 @@ class Bot:
                 self.note = f"EMERGENCY {cmd} {item.desc}"
                 if cmd == "z":
                     self.tried_wands[item.letter] = self.tried_wands.get(item.letter, 0) + 1
-                self.use(cmd, item, extra=direction(pos, target))
+                aim = direction(pos, target) if target else (self.unseen_dir or "h")
+                self.use(cmd, item, extra=aim)
                 return True
         return False
 
