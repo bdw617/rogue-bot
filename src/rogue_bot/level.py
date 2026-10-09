@@ -128,11 +128,15 @@ class LevelMap:
         if not (MAP_TOP <= r2 <= MAP_BOTTOM and 0 <= c2 < COLS):
             return False
         t = self.t(b)
-        if t not in WALKABLE and not (allow_traps and t == "^"):
-            return False
         if not ignore_blocked and (a, b) in self.blocked:
             return False
         r1, c1 = a
+        if t == " ":
+            # Rogue doesn't draw the square outside a door until you step out of the
+            # doorway, but a door always leads somewhere: allow stepping straight out.
+            return self.t(a) == "+" and (r1 == r2 or c1 == c2)
+        if t not in WALKABLE and not (allow_traps and t == "^"):
+            return False
         if r1 != r2 and c1 != c2:
             if self.t(a) == "+" or t == "+":
                 return False

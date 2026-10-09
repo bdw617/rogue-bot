@@ -157,3 +157,29 @@ def test_walls_on_the_map_edge_do_not_crash():
         for c in range(70, 80):
             m.search_score((r, c))
             m.hides_door((r, c))
+
+
+def test_bot_walks_out_through_a_door_into_the_unseen():
+    # The live game: a room whose doors show nothing beyond them.
+    lines = screen({
+        10: " " * 62 + "-------------",
+        11: " " * 62 + "+...........|",
+        12: " " * 62 + "|...........|",
+        13: " " * 62 + "|@..........|",
+        14: " " * 62 + "-------+-----",
+    })
+    m = LevelMap()
+    m.update(lines, (13, 63))
+    assert m.can_step((11, 62), (11, 61))        # out the west door
+    assert m.can_step((14, 69), (15, 69))        # out the south door
+    assert not m.can_step((11, 62), (12, 61))    # never diagonally out of a door
+    assert not m.can_step((12, 63), (12, 61))    # not through a wall
+    target, _ = m.nearest((13, 63), m.is_frontier)
+    assert target == (11, 62)                    # first the door...
+    m.visited.add((11, 62))
+    target, _ = m.nearest((13, 63), m.is_frontier)
+    assert target == (11, 61)                    # ...then the unseen square beyond it
+    # If stepping out fails (a hidden passage), that way is marked blocked and skipped.
+    m.blocked.add(((11, 62), (11, 61)))
+    m.blocked.add(((14, 69), (15, 69)))
+    assert m.nearest((13, 63), lambda p: m.t(p) == " ") is None
