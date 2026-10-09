@@ -40,3 +40,23 @@ def test_threat_uses_priors_then_experience(tmp_path):
         book.observe(["the snake hit"], hp_drop=1, target=None)
     rate, worst = book.threat("S", depth=1)
     assert worst == 1 and rate < unseen_rate
+
+
+def test_fast_monsters_are_remembered_across_runs(tmp_path):
+    path = tmp_path / "m.json"
+    first = MonsterBook(path)
+    for _ in range(3):
+        first.ran_from("K")
+        first.caught_us("K")
+    first.ran_from("H")
+    first.save()
+    later = MonsterBook(path)
+    assert later.outruns_us("K")
+    assert not later.outruns_us("H")
+
+
+def test_old_book_files_still_load(tmp_path):
+    path = tmp_path / "m.json"
+    path.write_text('{"emu": {"attacks": 3, "hits": 1, "damage": 2, "damaged_hits": 1, '
+                    '"max_hit": 2, "swings": 4, "kills": 1, "kill_swings": 2, "deaths": 0}}')
+    assert MonsterBook(path).known["emu"].kite_runs == 0

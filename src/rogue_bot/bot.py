@@ -96,7 +96,6 @@ class Bot:
         self.last_sig = None
         self.items_off_until = 0             # watchdog: skip item actions until this step
         self.kiting = 0                      # turns spent running from the current fight
-        self.unkitable: set[str] = set()     # monsters that hit us while we ran (too fast)
 
     # ---- terminal plumbing -------------------------------------------------
 
@@ -459,8 +458,9 @@ class Bot:
             self.kiting = 0
             return False
         if self.kiting and hp_drop and adjacent:
-            self.unkitable |= {chars[p] for p in adjacent}  # it caught us mid-run: too fast
-        chasers = [p for p in chasers if chars[p] not in self.unkitable]
+            for p in adjacent:
+                self.book.caught_us(chars[p])  # it caught us mid-run: maybe too fast to kite
+        chasers = [p for p in chasers if not self.book.outruns_us(chars[p])]
         P = self.params
         if not chasers or self.kiting > P.kite_max_turns:
             return False
@@ -473,6 +473,8 @@ class Bot:
         d = self.map.flee_step(pos, chasers, set(monsters))
         if not d:
             return False
+        if not self.kiting:
+            self.book.ran_from(chars[chasers[0]])
         self.kiting += 1
         self.note = f"kite {chars[chasers[0]]} (hp {st.hp}/{st.maxhp}, fight would cost ~{cost:.0f})"
         self.move(pos, step(pos, d), d)

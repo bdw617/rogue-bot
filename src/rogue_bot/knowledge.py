@@ -40,6 +40,8 @@ class Record:
     kills: int = 0
     kill_swings: int = 0  # our swings summed over fights we won
     deaths: int = 0       # games it ended
+    kite_runs: int = 0    # times we ran from it
+    caught: int = 0       # times it hit us anyway while we ran (it's faster than us)
 
     def merge(self, other: "Record") -> None:
         for f in fields(self):
@@ -92,6 +94,19 @@ class MonsterBook:
                 # The killing blow prints "defeated", not "you hit".
                 r.kill_swings += self.fight_swings.get(name, 0) + 1
             self.fight_swings.pop(name, None)
+
+    def ran_from(self, letter: str) -> None:
+        for r in self._both(NAMES.get(letter, letter)):
+            r.kite_runs += 1
+
+    def caught_us(self, letter: str) -> None:
+        for r in self._both(NAMES.get(letter, letter)):
+            r.caught += 1
+
+    def outruns_us(self, letter: str) -> bool:
+        """Has running from this monster tended to fail?"""
+        r = self.known.get(NAMES.get(letter, ""), Record())
+        return r.caught >= 2 and r.caught >= 0.3 * r.kite_runs
 
     def died_to(self, cause: str) -> None:
         low = cause.lower()
