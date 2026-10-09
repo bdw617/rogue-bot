@@ -4,28 +4,32 @@ pytest.importorskip("gymnasium")
 
 from rogue_bot.env import Rewards, reward
 
-
-def test_reward_counts_new_depth_gold_curiosity_and_death():
-    before = {"depth": 2, "max_depth": 2, "gold": 10}
-    assert reward(before, {"depth": 3, "gold": 10}, 0, False) == 10.0
-    assert reward(before, {"depth": 2, "gold": 60}, 0, False) == pytest.approx(1.0)
-    assert reward(before, {"depth": 2, "gold": 10}, 50, False) == pytest.approx(0.5)
-    assert reward(before, {"depth": 2, "gold": 10}, 0, True) == -10.0
+BASE = {"depth": 2, "max_depth": 2, "gold": 10, "exp": 5, "hp": 12}
 
 
-def test_revisiting_a_shallower_depth_earns_nothing():
-    before = {"depth": 3, "max_depth": 5, "gold": 0}
-    assert reward(before, {"depth": 4, "gold": 0}, 0, False, Rewards()) == 0.0
+def after(**changes):
+    return {**{k: v for k, v in BASE.items() if k != "max_depth"}, **changes}
 
 
-def test_fighting_and_exploring_signals():
-    before = {"depth": 2, "max_depth": 2, "gold": 0, "exp": 5, "hp": 12}
-    assert reward(before, {"depth": 2, "gold": 0, "exp": 8, "hp": 12}, 0, False) == pytest.approx(1.5)
-    assert reward(before, {"depth": 2, "gold": 0, "exp": 5, "hp": 8}, 0, False) == pytest.approx(-0.2)
-    assert reward(before, {"depth": 2, "gold": 0, "exp": 5, "hp": 12}, 0, False,
-                  new_visit=True) == pytest.approx(0.05)
+def test_score_rewards():
+    assert reward(BASE, after(depth=3), {}) == 10.0
+    assert reward(BASE, after(gold=60), {}) == pytest.approx(1.0)
+    assert reward(BASE, after(), {"died": True}) == -10.0
+    assert reward({**BASE, "max_depth": 5}, after(depth=4), {}) == 0.0   # no credit for going back
 
 
+def test_exploring_rewards():
+    assert reward(BASE, after(), {"new_squares": 50}) == pytest.approx(0.5)
+    assert reward(BASE, after(), {"new_visit": True}) == pytest.approx(0.1)
+    assert reward(BASE, after(), {"new_rooms": 1}) == pytest.approx(2.0)
+
+
+def test_fighting_rewards():
+    assert reward(BASE, after(exp=8), {"kills": 1}) == pytest.approx(1.5 + 2.0)
+    assert reward(BASE, after(hp=8), {}) == pytest.approx(-0.2)
+    assert reward(BASE, after(), {"kited": True}) == pytest.approx(0.2)
+    assert reward(BASE, after(), {"hurt_attack": True}) == pytest.approx(-1.0)
+    assert Rewards().hurt_attack < 0 < Rewards().kite
 def test_network_handles_the_observation():
     torch = pytest.importorskip("torch")
     from rogue_bot.env import RogueEnv

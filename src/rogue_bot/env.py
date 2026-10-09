@@ -15,7 +15,7 @@ import numpy as np
 
 from collections import Counter
 
-from .level import MAP_BOTTOM, MAP_TOP, find_player, parse_status
+from .level import MAP_BOTTOM, MAP_TOP, LevelMap, find_player, parse_status
 from .term import COLS, Terminal
 
 ACTIONS = ["h", "j", "k", "l", "y", "u", "b", "n", "s", ">"]
@@ -35,19 +35,25 @@ class Rewards:
     exp: float = 0.5            # per experience point (killing things)
     hp_lost: float = -0.05      # per hit point lost
     new_square: float = 0.01    # curiosity: per map square seen for the first time this level
-    new_visit: float = 0.05     # curiosity: per square stood on for the first time this level
+    new_visit: float = 0.1      # curiosity: per square stood on for the first time this level
+    new_room: float = 2.0       # per room exposed for the first time this level
+    kill: float = 2.0           # per monster killed
+    kite: float = 0.2           # hurt, monster near, moved without losing ground or HP
+    hurt_attack: float = -1.0   # starting a fight while below full HP
     death: float = -10.0
 
 
-def reward(before: dict, after: dict, new_squares: int, died: bool, r: Rewards = Rewards(),
-           new_visit: bool = False) -> float:
-    """Score change between two status snapshots (dicts with depth, gold, exp, hp)."""
+def reward(before: dict, after: dict, events: dict, r: Rewards = Rewards()) -> float:
+    """Reward for one move: status before/after (depth, gold, exp, hp) plus what happened
+    (new_squares, new_visit, new_rooms, kills, kited, hurt_attack, died)."""
     total = r.new_level * max(0, after["depth"] - before["max_depth"])
     total += r.gold * max(0, after["gold"] - before["gold"])
     total += r.exp * max(0, after.get("exp", 0) - before.get("exp", 0))
     total += r.hp_lost * max(0, before.get("hp", 0) - after.get("hp", 0))
-    total += r.new_square * new_squares + r.new_visit * new_visit
-    if died:
+    total += r.new_square * events.get("new_squares", 0) + r.new_visit * events.get("new_visit", 0)
+    total += r.new_room * events.get("new_rooms", 0) + r.kill * events.get("kills", 0)
+    total += r.kite * events.get("kited", 0) + r.hurt_attack * events.get("hurt_attack", 0)
+    if events.get("died"):
         total += r.death
     return total
 
@@ -78,6 +84,7 @@ class RogueEnv(gym.Env):
         return not self.term.alive or any(m in line.lower() for line in self._lines() for m in DEATH_MARKS)
 
     def _send(self, keys: str) -> None:
+        self.turn_msgs: list[str] = []
         self.term.send(keys)
         self.term.pump()
         for _ in range(30):
@@ -87,6 +94,7 @@ class RogueEnv(gym.Env):
                 return
             if "-more-" in top:
                 self.messages.append(top.replace("-more-", "").strip())
+                self.turn_msgs.append(self.messages[-1])
                 self.term.send(" ")
             elif any("--press space to continue--" in line for line in lines):
                 self.term.send(" ")
@@ -95,6 +103,7 @@ class RogueEnv(gym.Env):
             else:
                 if top:
                     self.messages.append(top)
+                    self.turn_msgs.append(top)
                 self.messages = self.messages[-4:]
                 return
             self.term.pump()
@@ -133,6 +142,16 @@ class RogueEnv(gym.Env):
                        np.float32)
         return {"screen": screen, "local": local, "visits": visits, "status": vec}
 
+    def _monsters(self) -> list[tuple[int, int]]:
+        rows = self._lines()[MAP_TOP:MAP_BOTTOM + 1]
+        return [(r, c) for r, row in enumerate(rows) for c, ch in enumerate(row[:COLS]) if ch.isupper()]
+
+    def _nearest_monster(self) -> int:
+        if not self.pos:
+            return 99
+        return min((max(abs(r - self.pos[0]), abs(c - self.pos[1])) for r, c in self._monsters()),
+                   default=99)
+
     def _track_position(self) -> bool:
         """Note where the agent stands; True if it's a square it hasn't stood on this level."""
         found = find_player(self._lines())
@@ -169,20 +188,47 @@ class RogueEnv(gym.Env):
         self.max_depth, self.steps, self.seen = self.last_status["depth"], 0, set()
         self.visits: Counter = Counter()
         self.pos = None
+        self.fighting_until = 0  # a swing within the last few moves means we're mid-fight
+        self.level = LevelMap()
         self._track_position()
         self._new_squares()
+        self.rooms = self._rooms()
         return self._obs(self.last_status), {}
 
+    def _rooms(self) -> int:
+        """Rooms exposed so far on this level (remembered, since rogue hides rooms you leave)."""
+        found = find_player(self._lines())
+        if found:
+            self.level.update(self._lines(), found)
+        return self.level.rooms_seen()
+
     def step(self, action: int):
+        near_before = self._nearest_monster()
         self._send(ACTIONS[int(action)])
         self.steps += 1
         died = self._dead()
         status = self.last_status if died else self._status()
         if status["depth"] != self.last_status["depth"]:
-            self.seen, self.visits = set(), Counter()  # a new level: everything on it is new
-        new_visit = not died and self._track_position()
+            # A new level: everything on it is new.
+            self.seen, self.visits, self.level, self.rooms = set(), Counter(), LevelMap(), 0
+        events = {"died": died}
+        if not died:
+            events["new_visit"] = self._track_position()
+            events["new_squares"] = self._new_squares()
+            rooms = self._rooms()
+            events["new_rooms"], self.rooms = max(0, rooms - self.rooms), max(rooms, self.rooms)
+        text = "  ".join(self.turn_msgs).lower()
+        swung = "you hit" in text or "you miss" in text or "defeated" in text
+        events["kills"] = text.count("defeated")
+        hurt = self.last_status["hp"] < self.last_status["maxhp"]
+        events["hurt_attack"] = swung and hurt and self.steps > self.fighting_until
+        if swung:
+            self.fighting_until = self.steps + 3
+        near_after = 99 if died else self._nearest_monster()
+        events["kited"] = (hurt and not swung and near_before <= 2 and near_after >= 2
+                           and near_after >= near_before and status["hp"] >= self.last_status["hp"])
         before = {**self.last_status, "max_depth": self.max_depth}
-        r = reward(before, status, 0 if died else self._new_squares(), died, self.rewards, new_visit)
+        r = reward(before, status, events, self.rewards)
         self.max_depth = max(self.max_depth, status["depth"])
         self.last_status = status
         truncated = self.steps >= self.max_steps and not died
