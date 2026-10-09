@@ -46,6 +46,22 @@ The bot only uses what a player sees on screen. It never reads rogue's memory, s
 
 The bot learns from its own fights and remembers across games. For each monster it records hits, misses, damage per hit, worst hit, swings needed to kill, and deaths caused, all parsed from combat messages and HP changes. It uses the book to decide when to fight, when to run, when to shoot, and when to use emergency items. The book lives at `~/.local/share/rogue-bot/monsters.json`; pass `--book PATH` to use another one.
 
+## Tuning: make it better over time
+
+The bot's judgement comes down to about 20 numbers in `params.py`: how much HP to rest back to, when to run from a fight, how far away to start shooting, how long to stay on a level, how hard to search. The tuner uses [Optuna](https://optuna.org) to find better values by playing real games:
+
+```bash
+uv run rogue-bot-tune                # 40 trials of 24 games, 12 at a time: a few hours
+uv run rogue-bot-tune --trials 10    # a shorter session; studies resume where they left off
+uv run rogue-bot-tune --trials 0     # skip new trials, just replay the best ones
+```
+
+- Each trial picks a set of numbers, plays a batch of games in parallel, and scores the average depth reached. Clearly bad trials stop early.
+- Every game in a tuning run starts from the same frozen copy of the monster book, so trials compare fairly.
+- Rogue games are noisy, so at the end the top 3 trials are replayed on 48 fresh games each, alongside the numbers `rogue-bot` currently uses. A new set is saved only if it beats the current one in that replay.
+- The winner goes to `~/.local/state/rogue-bot/params.json`, and `rogue-bot` loads it automatically. The live view shows "tuned params" when it does. Use `--params PATH` to play with a different set.
+- The study (`tune.db`) and a log of every tuning game (`tune-games.jsonl`) are in the same folder. Run the tuner again any time to keep improving.
+
 ## Benchmark
 
 ```bash
@@ -64,6 +80,8 @@ You can run several benchmarks in parallel. Rogue seeds its dungeon from the clo
 | `level.py` | Parses the status line, remembers the map per level, and finds paths with BFS using rogue's movement rules (no diagonal moves through doors or past rock) |
 | `bot.py` | Picks one action per turn, in priority order (below) |
 | `knowledge.py` | The monster book |
+| `params.py` | The judgement numbers and the ranges the tuner may try |
+| `tune.py` | The Optuna tuner |
 | `cli.py` | Live view, multiple games, results log |
 
 The bot's priority order each turn:

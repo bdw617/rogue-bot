@@ -50,8 +50,10 @@ class Record:
 
 
 class MonsterBook:
-    def __init__(self, path: Path | None = DEFAULT_PATH):
+    def __init__(self, path: Path | None = DEFAULT_PATH, persist: bool = True):
+        """persist=False reads the book but never writes it (fair comparisons while tuning)."""
         self.path = path
+        self.persist = persist
         self.known: dict[str, Record] = {}
         self.session: dict[str, Record] = {}  # this game's additions, merged on save
         self.fight_swings: dict[str, int] = {}
@@ -114,7 +116,7 @@ class MonsterBook:
 
     def save(self) -> None:
         """Merge this game's observations into the shared file (safe with parallel games)."""
-        if not self.path or not self.session:
+        if not self.path or not self.session or not self.persist:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path.with_suffix(".lock"), "w") as lock:

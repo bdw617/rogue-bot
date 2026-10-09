@@ -68,7 +68,8 @@ def neighbors8(p: Pos):
 
 
 class LevelMap:
-    def __init__(self):
+    def __init__(self, dead_end_tier: int = 40, wall_tier: int = 15):
+        self.dead_end_tier, self.wall_tier = dead_end_tier, wall_tier
         self.terrain = [[" "] * COLS for _ in range(ROWS)]
         self.items: dict[Pos, str] = {}
         self.visited: set[Pos] = set()
@@ -215,7 +216,7 @@ class LevelMap:
         blind_door = t == "+" and any(self.t(step(p, d)) == " " for d in "hjkl")
         if (dead_end or blind_door) and p in self.visited:
             # These almost always hide a corridor, and search only reaches 1 square.
-            return (self.searches[p] // 40, 0, 0)
+            return (self.searches[p] // self.dead_end_tier, 0, 0)
         elif t == "." and any(self.t(n) in "-|" for n in neighbors8(p)):
             kind = 1
         elif t == "#" and p in self.visited:
@@ -227,4 +228,4 @@ class LevelMap:
                       for c in range(max(0, p[1] - 3), min(COLS, p[1] + 4)))
         if kind == 2 and unknown < 12:
             return None
-        return (self.searches[p] // 15, kind, -(unknown // 6))
+        return (self.searches[p] // self.wall_tier, kind, -(unknown // 6))

@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .knowledge import NAMES, MonsterBook
+from .params import Params
 from .level import (LevelMap, Pos, Status, direction, find_player, neighbors8,
                     parse_status, step)
 from .term import Terminal
@@ -63,6 +64,7 @@ class Bot:
     max_steps: int = 30000
     trace: object = None
     book: MonsterBook = field(default_factory=lambda: MonsterBook(path=None))
+    params: Params = field(default_factory=Params)
     result: Result = field(default_factory=Result)
     note: str = ""
     messages: deque = field(default_factory=lambda: deque(maxlen=4))
@@ -71,7 +73,7 @@ class Bot:
     target: Pos | None = None
 
     def __post_init__(self):
-        self.map = LevelMap()
+        self.map = self.new_map()
         self.depth = 0
         self.level_steps = 0
         self.effects: set[str] = set()
@@ -228,7 +230,7 @@ class Bot:
             self.result.depth = max(self.result.depth, st.depth)
             self.result.gold, self.result.xlevel = st.gold, st.xlevel
             if st.depth != self.depth:
-                self.depth, self.map, self.level_steps = st.depth, LevelMap(), 0
+                self.depth, self.map, self.level_steps = st.depth, self.new_map(), 0
                 self.backed_off = 0
                 self.trail.clear()
                 self.prev_monsters, self.still = {}, {}
@@ -267,6 +269,9 @@ class Bot:
             self.trace.write(f"# end: {self.result.cause}\n")
         self.show()
         return self.result
+
+    def new_map(self) -> LevelMap:
+        return LevelMap(dead_end_tier=self.params.dead_end_tier, wall_tier=self.params.wall_tier)
 
     def watchdog(self, pos: Pos, steps: int) -> None:
         """Break loops where an action silently fails and no game time passes."""
@@ -321,7 +326,7 @@ class Bot:
     # ---- decisions -----------------------------------------------------------
 
     def act(self, st: Status, pos: Pos, monsters: list[Pos], hp_drop: int) -> None:
-        m = self.map
+        m, P = self.map, self.params
         lines = self.lines()
         chars = {p: lines[p[0]][p[1]] for p in monsters}
         adjacent = [p for p in monsters
@@ -347,11 +352,11 @@ class Bot:
 
         worst = max((self.worst_hit(chars[p], st.depth) for p in adjacent), default=0)
         # One more worst-case hit could kill us.
-        critical = adjacent and st.hp <= max(3, worst)
+        critical = adjacent and st.hp <= max(3, worst * P.critical_mult)
         if critical and self.emergency(pos, adjacent[0]):
             return
         losing = [p for p in monsters if p in self.approaching or p in adjacent]
-        if (critical or st.hp <= st.maxhp * 2 // 5) and losing and self.flee_downstairs(pos, monsters):
+        if (critical or st.hp <= st.maxhp * P.flee_frac) and losing and self.flee_downstairs(pos, monsters):
             return
 
         scary = {p for p in monsters if chars[p] in AVOID}
@@ -384,8 +389,8 @@ class Bot:
         if self.items_ok() and self.shoot(pos, monsters, chars, st):
             return
 
-        coming = [p for p in self.approaching if dist(p, pos) <= 5 and p not in scary]
-        if coming and self.waited < 6:
+        coming = [p for p in self.approaching if dist(p, pos) <= P.wait_range and p not in scary]
+        if coming and self.waited < P.wait_turns:
             # Let it come to us: we get the first swing.
             self.waited += 1
             self.note = f"wait for {chars[coming[0]]} to come"
@@ -399,8 +404,8 @@ class Bot:
 
         # Resting burns food; only top up fully when there's food to spare.
         spare_food = sum(i.has(*FOOD) for i in self.inv) >= 2
-        full_rest = spare_food and (st.xlevel <= 3 or any(p not in scary for p in monsters))
-        rest_to = st.maxhp if full_rest else st.maxhp * (0.7 if food else 0.5)
+        full_rest = spare_food and (st.xlevel <= P.full_rest_xl or any(p not in scary for p in monsters))
+        rest_to = st.maxhp if full_rest else st.maxhp * (P.rest_frac if food else P.rest_frac_no_food)
         if st.hp < rest_to and not coming:
             self.note = f"rest (hp {st.hp}/{st.maxhp})"
             return self.search(pos, 10 if self.calm > 5 else 1)
@@ -410,12 +415,12 @@ class Bot:
 
         # Don't wake sleepers we'd struggle to beat, or step next to freezers.
         sleepers = {p for p in monsters if self.still.get(p, 0) >= 3
-                    and self.fight_cost(chars[p], st.depth) > st.hp * 0.5}
+                    and self.fight_cost(chars[p], st.depth) > st.hp * P.sleeper_cost_frac}
         keep_clear = scary | sleepers
         avoid = (set(monsters) | keep_clear | {n for p in keep_clear for n in neighbors8(p)}) - {pos}
         stairs = m.stairs()
         # Long levels starve you; new levels bring food.
-        rush = stairs and (self.level_steps > 600 or not food)
+        rush = stairs and (self.level_steps > P.level_budget or not food)
         goals = [] if rush else [
             ("loot", lambda p: p in m.items),
             ("explore", m.is_frontier),
@@ -456,12 +461,13 @@ class Bot:
         if self.kiting and hp_drop and adjacent:
             self.unkitable |= {chars[p] for p in adjacent}  # it caught us mid-run: too fast
         chasers = [p for p in chasers if chars[p] not in self.unkitable]
-        if not chasers or self.kiting > 200:
+        P = self.params
+        if not chasers or self.kiting > P.kite_max_turns:
             return False
         worst = max(self.worst_hit(chars[p], st.depth) for p in chasers)
         cost = sum(self.fight_cost(chars[p], st.depth) for p in chasers)
         # Running only pays while there's HP to regenerate, and a short fight is worth finishing.
-        if not (st.hp < st.maxhp * 0.9 and cost + worst > st.hp + 1):
+        if not (st.hp < st.maxhp * P.kite_hp_frac and cost + worst > st.hp + P.kite_margin):
             self.kiting = 0
             return False
         d = self.map.flee_step(pos, chasers, set(monsters))
@@ -523,7 +529,7 @@ class Bot:
             if not d or (chars[p] in AVOID and dist(p, pos) < 3):
                 continue
             # A fight we'd likely lose is worth spending an unknown wand on.
-            if wand and p in self.approaching and self.fight_cost(chars[p], st.depth) > st.hp * 0.6:
+            if wand and p in self.approaching and self.fight_cost(chars[p], st.depth) > st.hp * self.params.wand_cost_frac:
                 self.tried_wands[wand.letter] = self.tried_wands.get(wand.letter, 0) + 1
                 self.note = f"zap {wand.desc} at {chars[p]}"
                 self.use("z", wand, extra=d)
@@ -535,7 +541,9 @@ class Bot:
                     continue
                 # Swapping costs a turn; not worth it for close or erratic (bat) targets.
                 others = [q for q in monsters if q != p and dist(q, pos) <= 3]
-                far_enough = 3 if self.fight_cost(chars[p], st.depth) > st.hp * 0.4 else 4
+                P = self.params
+                costly = self.fight_cost(chars[p], st.depth) > st.hp * P.bow_danger_frac
+                far_enough = P.bow_range_danger if costly else P.bow_range
                 if chars[p] == "B" or dist(p, pos) < far_enough or others:
                     continue
                 self.note = f"wield bow for {chars[p]}"
@@ -568,7 +576,7 @@ class Bot:
             self.descend(pos)
             return True
         for p, d, dist_ in self.map.bfs(pos, set(monsters)):
-            if dist_ > 20:
+            if dist_ > self.params.flee_stairs_dist:
                 return False
             if p == stairs:
                 self.note = f"FLEE to stairs ({dist_} away)"
@@ -616,14 +624,14 @@ class Bot:
             if not self.wield(best):
                 self.bad_weapons.add(best.letter)
             return True
-        if st.hp >= st.maxhp * 0.8 and not self.effects:
+        if self.params.taste_potions and st.hp >= st.maxhp * self.params.taste_hp_frac and not self.effects:
             # Learn what potions are while safe, so emergencies use a known one.
             potion = self.find(lambda i: i.has("potion") and i.unknown)
             if potion:
                 self.note = f"taste-test {potion.desc}"
                 self.use("q", potion)
                 return True
-        if st.hp >= st.maxhp * 0.6:
+        if st.hp >= st.maxhp * self.params.read_hp_frac:
             scroll = self.find(lambda i: i.has("scroll") and (i.unknown or i.has(*SAFE_SCROLLS)))
             if scroll:
                 self.note = f"read {scroll.desc}"
