@@ -18,6 +18,7 @@ learned per game and forgotten at reset.
 """
 
 import re
+import signal
 from collections import Counter
 from dataclasses import dataclass
 
@@ -64,6 +65,29 @@ GOOD_EFFECTS = ("moving much faster", "watching over you", "feel stronger", "bet
 BAD_EFFECTS = ("cloak of darkness", "so cosmic", "feel confused", "slowing down",
                "fall asleep", "feel weaker", "humming noise", "very sick")
 SLOT_FEATURES = len(KINDS) + 4  # kind one-hot, equipped, count, strength, learned effect value
+STEP_TIMEOUT = 60  # seconds; one hung game must never freeze a whole training run
+
+
+class StepTimeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise StepTimeout()
+
+
+def guarded(fn, seconds: int = STEP_TIMEOUT):
+    """Run fn, raising StepTimeout if it takes longer than `seconds` (main thread only)."""
+    try:
+        previous = signal.signal(signal.SIGALRM, _on_alarm)
+    except ValueError:  # not the main thread: run unguarded
+        return fn()
+    signal.alarm(seconds)
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def kind(desc: str) -> str:
@@ -200,6 +224,8 @@ class RogueEnv(gym.Env):
         })
         self.targets: list[tuple[str, tuple[int, int], int]] = []
         self.term: Terminal | None = None
+        self.timeouts = 0  # steps abandoned because rogue stopped answering
+        self.last_obs = None
         self.messages: list[str] = []
         self.turn_msgs: list[str] = []
         self.inventory: dict[str, str] = {}
@@ -436,6 +462,15 @@ class RogueEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        for attempt in range(3):
+            try:
+                return guarded(self._reset)
+            except StepTimeout:
+                self.timeouts += 1
+                self.close()
+        raise RuntimeError("rogue failed to start three times in a row")
+
+    def _reset(self):
         from .cli import wait_for_fresh_seed  # rogue seeds from the clock; keep starts apart
         self.close()
         wait_for_fresh_seed()
@@ -459,9 +494,21 @@ class RogueEnv(gym.Env):
         self._track_position()
         self._new_squares()
         self.rooms = self._rooms()
-        return self._obs(self.last_status), {}
+        self.last_obs = self._obs(self.last_status)
+        return self.last_obs, {}
 
     def step(self, action: int):
+        try:
+            return guarded(lambda: self._step(action))
+        except StepTimeout:
+            # Rogue stopped answering: abandon this game rather than freeze training.
+            self.timeouts += 1
+            self.close()
+            info = {"depth": self.max_depth, "gold": self.last_status["gold"],
+                    "xlevel": self.last_status["xlevel"], "steps": self.steps, "cause": "env timeout"}
+            return self.last_obs, 0.0, False, True, info
+
+    def _step(self, action: int):
         key = ACTIONS[int(action)]
         if key.startswith("go"):
             i = int(key[2:])
@@ -474,7 +521,8 @@ class RogueEnv(gym.Env):
         if died or truncated:
             info = {"depth": self.max_depth, "gold": status["gold"], "xlevel": status["xlevel"],
                     "steps": self.steps, "cause": self._cause() if died else f"step limit ({self.max_steps})"}
-        return self._obs(status), r, died, truncated, info
+        self.last_obs = self._obs(status)
+        return self.last_obs, r, died, truncated, info
 
     def _journey(self, target: tuple[int, int]) -> tuple[float, bool]:
         """Walk the shortest route to a target, one rewarded move at a time. Control comes back

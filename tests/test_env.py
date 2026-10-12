@@ -142,3 +142,24 @@ def test_targets_list_what_it_can_see_and_reach():
     assert f"go to target {len(targets) - 1}" in allowed and f"go to target {len(targets)}" not in allowed
     feats = env._target_features()
     assert feats[:len(targets), -1].all() and not feats[len(targets):].any()
+
+
+def test_a_hung_step_times_out_instead_of_freezing():
+    import time
+    from rogue_bot.env import StepTimeout, guarded
+    start = time.monotonic()
+    with pytest.raises(StepTimeout):
+        guarded(lambda: time.sleep(10), seconds=1)
+    assert time.monotonic() - start < 3
+    assert guarded(lambda: 42, seconds=1) == 42
+
+
+def test_seed_lock_never_waits_long_even_if_the_clock_went_backwards(tmp_path, monkeypatch):
+    import time
+    from rogue_bot.cli import wait_for_fresh_seed
+    from rogue_bot.term import state_dir
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    (state_dir() / "start.lock").write_text(str(time.time() + 3600))   # "last start" an hour ahead
+    start = time.monotonic()
+    wait_for_fresh_seed()
+    assert time.monotonic() - start < 2

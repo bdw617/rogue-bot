@@ -24,12 +24,26 @@ def exit_cleanly_on_signals() -> None:
 
 
 def wait_for_fresh_seed() -> None:
-    """Rogue seeds from the clock: keep game starts across parallel runs >1s apart."""
+    """Rogue seeds from the clock: keep game starts across parallel runs >1s apart.
+
+    Never waits long: a stuck lock holder or a clock that jumped backwards must not stall
+    a run (a training run once froze for 63 hours)."""
     with open(state_dir() / "start.lock", "a+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    return
+                time.sleep(0.05)
         f.seek(0)
-        last = float(f.read() or 0)
-        time.sleep(max(0.0, last + 1.2 - time.time()))
+        try:
+            last = float(f.read() or 0)
+        except ValueError:
+            last = 0.0
+        time.sleep(min(1.2, max(0.0, last + 1.2 - time.time())))
         f.seek(0)
         f.truncate()
         f.write(str(time.time()))
